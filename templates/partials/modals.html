@@ -651,3 +651,25 @@
             <!-- 邮件内容将在这里显示 -->
         </div>
     </div>
+
+    <!-- 导入临时邮箱模态框 -->
+    <div class="modal" id="importTempEmailModal" onclick="if(event.target === this) hideImportTempEmailModal()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>导入临时邮箱</h3>
+                <button class="modal-close" onclick="hideImportTempEmailModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">邮箱信息</label>
+                    <textarea class="form-textarea" id="tempEmailImportInput"
+                        placeholder="邮箱地址----JWT&#10;user@example.com----eyJhbGciOiJIUzI1NiJ9...&#10;&#10;支持批量导入（每行一个）" rows="8"></textarea>
+                    <div class="form-hint">格式：邮箱地址----JWT，每行一个。JWT 可从 Cloudflare Worker Dashboard 获取。</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideImportTempEmailModal()">取消</button>
+                <button class="btn btn-primary" onclick="importTempEmail()">导入</button>
+            </div>
+        </div>
+    </div>

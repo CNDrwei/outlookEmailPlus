@@ -333,7 +333,7 @@ class TempMailService:
         )
         return mailbox
 
-    def import_user_mailbox(self, email_addr: str, *, allow_local_fallback: bool = True) -> dict[str, Any]:
+    def import_user_mailbox(self, email_addr: str, *, allow_local_fallback: bool = True, provider_name: str | None = None) -> dict[str, Any]:
         normalized_email = str(email_addr or "").strip()
         if not normalized_email:
             raise TempMailError("INVALID_PARAM", "邮箱地址不能为空", status=400)
@@ -348,10 +348,10 @@ class TempMailService:
             prefix, domain = normalized_email.rsplit("@", 1)
 
         provider = None
-        provider_name = None
+        resolved_provider_name = None
         try:
-            provider = self._get_provider(purpose="runtime")
-            provider_name = str(getattr(provider, "provider_name", "") or "").strip() or None
+            provider = self._get_provider(provider_name=provider_name, purpose="runtime")
+            resolved_provider_name = str(getattr(provider, "provider_name", "") or "").strip() or None
         except TempMailError:
             if not allow_local_fallback:
                 raise
@@ -360,21 +360,21 @@ class TempMailService:
             probe_mailbox = {
                 "kind": temp_emails_repo.TEMP_MAIL_KIND,
                 "email": normalized_email,
-                "provider_name": provider_name,
+                "provider_name": resolved_provider_name,
                 "mailbox_type": "user",
                 "status": "active",
                 "visible_in_ui": True,
                 "source": TEMP_MAIL_SOURCE,
                 "prefix": prefix,
                 "domain": domain,
-                "meta": {"provider_name": provider_name} if provider_name else {},
+                "meta": {"provider_name": resolved_provider_name} if resolved_provider_name else {},
             }
             try:
                 probe_result = provider.list_messages(probe_mailbox)
             except Exception:
                 probe_result = None
             else:
-                # BUG-02: probe_result=[] 也会被误判为“上游存在”，导致导入假成功。
+                # BUG-02: probe_result=[] 也会被误判为"上游存在"，导致导入假成功。
                 # 这里收紧：必须探测到至少 1 条有效消息才允许落库。
                 if isinstance(probe_result, list) and len(probe_result) > 0:
                     return self._create_or_load_mailbox_record(
@@ -385,7 +385,7 @@ class TempMailService:
                         prefix=prefix,
                         domain=domain,
                         meta=probe_mailbox["meta"],
-                        provider_name=provider_name,
+                        provider_name=resolved_provider_name,
                     )
 
             try:
@@ -400,7 +400,7 @@ class TempMailService:
                     visible_in_ui=True,
                     source=TEMP_MAIL_SOURCE,
                     meta=create_result.get("meta"),
-                    provider_name=create_result.get("provider_name") or provider_name,
+                    provider_name=create_result.get("provider_name") or resolved_provider_name,
                 )
 
         if not allow_local_fallback:
@@ -413,8 +413,55 @@ class TempMailService:
             source=TEMP_MAIL_SOURCE,
             prefix=prefix,
             domain=domain,
-            meta={"provider_name": provider_name} if provider_name else None,
-            provider_name=provider_name,
+            meta={"provider_name": resolved_provider_name} if resolved_provider_name else None,
+            provider_name=resolved_provider_name,
+        )
+
+    def import_user_mailbox_with_jwt(self, email_addr: str, jwt_token: str, *, provider_name: str | None = None) -> dict[str, Any]:
+        """导入已有临时邮箱，直接使用用户提供的 JWT 落库（不调 CF Worker 创建）。
+
+        适用场景：用户从 Cloudflare Dashboard 已知邮箱地址和对应 JWT，
+        需要恢复/导入到本系统。跳过上游探测和创建步骤，直接写入本地记录。
+        """
+        normalized_email = str(email_addr or "").strip()
+        if not normalized_email:
+            raise TempMailError("INVALID_PARAM", "邮箱地址不能为空", status=400)
+        jwt = str(jwt_token or "").strip()
+        if not jwt:
+            raise TempMailError("INVALID_PARAM", "JWT 不能为空", status=400)
+
+        resolved_provider = str(provider_name or "").strip() or "cloudflare_temp_mail"
+
+        existing = temp_emails_repo.get_temp_email_by_address(normalized_email)
+        if existing:
+            # 已存在：更新 meta 中的 JWT（覆盖旧值）
+            from outlook_web.repositories.temp_emails import deserialize_temp_email_meta, serialize_temp_email_meta
+
+            meta = deserialize_temp_email_meta(existing.get("meta_json"), source=existing.get("source"))
+            meta["provider_jwt"] = jwt
+            meta["provider_name"] = resolved_provider
+            new_meta_json = serialize_temp_email_meta(meta, source=existing.get("source"))
+            from outlook_web.db import get_db as _get_db
+
+            db = _get_db()
+            db.execute("UPDATE temp_emails SET meta_json = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?", (new_meta_json, normalized_email))
+            db.commit()
+            return _mailbox_from_record(self.get_mailbox(normalized_email))
+
+        prefix = None
+        domain = None
+        if "@" in normalized_email:
+            prefix, domain = normalized_email.rsplit("@", 1)
+
+        return self._create_or_load_mailbox_record(
+            email_addr=normalized_email,
+            mailbox_type="user",
+            visible_in_ui=True,
+            source=TEMP_MAIL_SOURCE,
+            prefix=prefix,
+            domain=domain,
+            meta={"provider_jwt": jwt, "provider_name": resolved_provider},
+            provider_name=resolved_provider,
         )
 
     def _generate_task_token(self) -> str:

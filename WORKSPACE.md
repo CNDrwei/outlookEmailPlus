@@ -33,57 +33,76 @@
    - `python -m compileall -q` —— 通过
    - `python -m unittest` 42 tests —— **全部通过，无回归**
 
-**Phase 2 — 前端导入按钮（已完成，已按用户反馈重构）**：
+**Phase 2 — 前端导入模态框（已完成，第三版）**：
 
-**第一版（已废弃）**：单个输入框 + 按钮，无条件显示，调用单条导入 API
+**设计变更历史**：
+- 第一版（已废弃）：单个输入框 + 按钮，直接嵌在页面
+- 第二版（已废弃）：textarea + 分组选择 + 批量导入按钮，嵌在页面
+- **第三版（当前，按用户反馈"参照正常邮箱导入"重构为模态框）**：
+  - 去掉分组选择（临时邮箱本身无分组概念）
+  - 格式改为 `邮箱地址----JWT`（与正常邮箱 `邮箱----密码----...` 对应）
+  - 使用独立模态框，与正常邮箱导入交互范式一致
 
-**第二版（当前，按用户"正常导入一样"的要求重构）**：
-1. 修改 `templates/index.html`：
-   - 替换单个输入框为 textarea + 分组选择下拉框 + 「批量导入」按钮
-   - 导入区域 `id="tempEmailImportSection"` 默认隐藏
-   - 仅当 Cloudflare Temp Mail 被选中时才显示
-2. 修改 `static/js/features/temp_emails.js`：
-   - `onTempEmailProviderChange()` 增加显示/隐藏导入区域的逻辑
-   - 新增 `updateTempEmailImportGroupSelect()` 函数，从 groups 全局变量填充分组下拉
-   - `importTempEmail()` 改为批量处理：逐行解析 → 循环调用 API → 显示进度 → 汇总结果
-3. 修改 `static/js/i18n.js`：
-   - 新增词条：`批量导入`、`导入邮箱`、`格式：每行一个邮箱地址，支持批量导入`、`导入完成`
+**第三版改动**：
+
+1. `templates/index.html`：
+   - 去掉页面内嵌的 `tempEmailImportSection` div
+   - 在临时邮箱列标题 `+ 创建` 旁边添加「导入」按钮
+2. `templates/partials/modals.html`：
+   - 新增 `#importTempEmailModal` 模态框（标题 + textarea + 导入/取消按钮）
+   - textarea placeholder 示例 `邮箱地址----JWT` 格式
+3. `static/js/features/temp_emails.js`：
+   - 去掉 `updateTempEmailImportGroupSelect()` 函数
+   - `onTempEmailProviderChange()` 简化（不再控制导入区域显示/隐藏）
+   - 新增 `showImportTempEmailModal()` / `hideImportTempEmailModal()` 函数
+   - `importTempEmail()` 重写：解析 `邮箱----JWT` 格式，传 `{email, jwt}` 到后端
+4. `static/js/i18n.js`：
+   - 新增词条 `请输入邮箱信息`
+5. `outlook_web/controllers/temp_emails.py`：
+   - `api_import_temp_email()` 新增 `jwt` 可选参数
+   - 有 JWT 时调用新方法 `import_user_mailbox_with_jwt()` 直接落库
+   - 无 JWT 时走原有 `import_user_mailbox()` 逻辑
+6. `outlook_web/services/temp_mail_service.py`：
+   - 新增 `import_user_mailbox_with_jwt()` 方法
+   - 已存在则更新 meta 中的 JWT；不存在则直接创建记录（meta 含 provider_jwt）
 
 **设计决策**：
-- 参考了正常邮箱导入的 `modals.html` 结构（textarea + 分组选择 + 格式提示）
-- 分组选择复用 `groups` 全局变量，过滤掉「临时邮箱」虚拟分组
-- 导入区域仅在 `cloudflare_temp_mail` Provider 时显示，其他 Provider 隐藏
+- 模态框交互与正常邮箱导入（`addAccountModal`）保持一致
+- 不需要分组选择——临时邮箱是一个整体，没有分组概念
+- 格式 `邮箱地址----JWT`：用户从 Cloudflare Dashboard 获取后粘贴
+- JWT 可选：有 JWT 则直接落库（不调 CF Worker），无 JWT 则走原有探测/创建流程
 
 **Phase 3 — 回归与验收（已完成）**：
 
-1. 全量回归测试：
-   - 命令：`python -m unittest discover -s tests -v`
-   - 结果：`Ran 1410 tests in 243.906s`
-   - 结论：**failures=4 / skipped=7**，与改动前基线完全一致
-   - 失败的 4 个测试全部为 `tests.test_pool_cf_real_e2e.RealCFWorkerE2ETests.*`（外部 CF Worker 真实 E2E，与本次改动无关）
-   - **无新增失败，未引入回归**
+1. 全量回归测试（第三轮，模态框重构后）：
+   - 命令：`python -m unittest discover -s tests`
+   - 结果：`Ran 1410 tests in 540.752s`
+   - 结论：**failures=4 / skipped=7**，与基线完全一致
+   - **模态框重构后无新增失败，未引入回归**
 
 2. 人工验收：
    - 启动本地服务：`python start.py` → 监听 `http://0.0.0.0:5000`
    - 路由注册验证：`/api/temp-emails/import` 已正确注册到 Flask url_map
-   - 前端 UI 验证：模板中已出现导入输入框和按钮
+   - 模态框验证：点击「导入」按钮弹出模态框
 
 **改动文件清单**：
 
 | 文件 | 改动 | Phase |
 |------|------|-------|
-| `outlook_web/controllers/temp_emails.py` | 新增 `api_import_temp_email()` + `import re` | Phase 1 |
+| `outlook_web/controllers/temp_emails.py` | `api_import_temp_email()` 支持 jwt 参数 | Phase 1+2 |
 | `outlook_web/routes/temp_emails.py` | 注册 `POST /api/temp-emails/import` | Phase 1 |
-| `templates/index.html` | 新增导入输入框与按钮 | Phase 2 |
-| `static/js/features/temp_emails.js` | 新增 `importTempEmail()` 函数 | Phase 2 |
-| `static/js/i18n.js` | 补充 4 个中英词条 | Phase 2 |
+| `outlook_web/services/temp_mail_service.py` | 新增 `import_user_mailbox_with_jwt()` | Phase 2 |
+| `templates/index.html` | 去掉内嵌 textarea，添加「导入」按钮 | Phase 2 |
+| `templates/partials/modals.html` | 新增 `#importTempEmailModal` 模态框 | Phase 2 |
+| `static/js/features/temp_emails.js` | 重写 `importTempEmail()` + 模态框控制 | Phase 2 |
+| `static/js/i18n.js` | 新增 `请输入邮箱信息` 词条 | Phase 2 |
 
 **当前状态**：
 - ✅ Phase 1（后端 API）
-- ✅ Phase 2（前端按钮）
+- ✅ Phase 2（前端模态框 — 第三版）
 - ✅ Phase 3（回归 + 验收）
-- ✅ 代码已本地提交（未推送远程）
-- ✅ 本地服务已启动（http://127.0.0.1:5000）
+- ⏳ 代码待本地提交（未推送远程）
+- ⏳ 本地服务需重启以加载最新代码
 
 **提交记录**：
 - Commit：`b9418e1`

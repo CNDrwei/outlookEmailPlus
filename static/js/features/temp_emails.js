@@ -254,30 +254,23 @@
         // 生成临时邮箱
         function onTempEmailProviderChange(selectedProvider) {
             loadTempEmailOptions(false, selectedProvider);
-            // 仅 Cloudflare Temp Mail 显示导入区域
-            const importSection = document.getElementById('tempEmailImportSection');
-            if (importSection) {
-                importSection.style.display = (selectedProvider === 'cloudflare_temp_mail') ? '' : 'none';
-                if (selectedProvider === 'cloudflare_temp_mail') {
-                    updateTempEmailImportGroupSelect();
-                }
+            // 仅 Cloudflare Temp Mail 显示导入按钮
+            const importBtn = document.getElementById('tempEmailImportBtn');
+            if (importBtn) {
+                importBtn.style.display = (selectedProvider === 'cloudflare_temp_mail') ? '' : 'none';
             }
         }
 
-        // 更新导入分组下拉
-        function updateTempEmailImportGroupSelect() {
-            const select = document.getElementById('tempEmailImportGroupSelect');
-            if (!select) return;
-            const currentValue = select.value;
-            const filteredGroups = groups.filter(g => g.name !== '临时邮箱');
-            select.innerHTML = filteredGroups.map(g =>
-                `<option value="${g.id}">${escapeHtml(g.name)}</option>`
-            ).join('');
-            if (currentValue && filteredGroups.find(g => g.id === parseInt(currentValue))) {
-                select.value = currentValue;
-            } else if (currentGroupId && filteredGroups.find(g => g.id === currentGroupId)) {
-                select.value = currentGroupId;
-            }
+        // 显示导入临时邮箱模态框
+        function showImportTempEmailModal() {
+            const textarea = document.getElementById('tempEmailImportInput');
+            if (textarea) textarea.value = '';
+            document.getElementById('importTempEmailModal').classList.add('show');
+        }
+
+        // 隐藏导入临时邮箱模态框
+        function hideImportTempEmailModal() {
+            document.getElementById('importTempEmailModal').classList.remove('show');
         }
 
         async function generateTempEmail() {
@@ -320,24 +313,25 @@
             }
         }
 
-        // 导入临时邮箱（批量）
+        // 导入临时邮箱（批量，支持 邮箱----JWT 格式）
         async function importTempEmail() {
             const textarea = document.getElementById('tempEmailImportInput');
             const raw = (textarea && textarea.value || '').trim();
             if (!raw) {
-                showToast(translateAppTextLocal('请输入邮箱地址'), 'warning');
+                showToast(translateAppTextLocal('请输入邮箱信息'), 'warning');
                 return;
             }
+
+            // 获取当前选择的 provider
+            const providerSelect = document.getElementById('tempEmailProviderSelect');
+            const providerName = providerSelect ? providerSelect.value : '';
 
             // 逐行解析，过滤空行和注释
             const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
             if (lines.length === 0) {
-                showToast(translateAppTextLocal('请输入邮箱地址'), 'warning');
+                showToast(translateAppTextLocal('请输入邮箱信息'), 'warning');
                 return;
             }
-
-            const groupSelect = document.getElementById('tempEmailImportGroupSelect');
-            const groupId = groupSelect && groupSelect.value ? parseInt(groupSelect.value) : null;
 
             let imported = 0;
             let failed = 0;
@@ -345,10 +339,20 @@
             showToast(`${translateAppTextLocal('正在导入…')} (0/${total})`, 'info');
 
             for (let i = 0; i < lines.length; i++) {
-                const email = lines[i];
+                const line = lines[i];
+                // 解析 邮箱----JWT 格式
+                const parts = line.split('----');
+                const email = (parts[0] || '').trim();
+                const jwt = (parts[1] || '').trim();
+
+                if (!email) {
+                    failed++;
+                    continue;
+                }
+
                 try {
-                    const body = { email };
-                    if (groupId) body.group_id = groupId;
+                    const body = { email, provider_name: providerName };
+                    if (jwt) body.jwt = jwt;
 
                     const response = await fetch('/api/temp-emails/import', {
                         method: 'POST',
@@ -372,8 +376,8 @@
                 showToast(`${translateAppTextLocal('正在导入…')} (${i + 1}/${total})`, 'info');
             }
 
-            // 清空输入框并刷新列表
-            if (textarea) textarea.value = '';
+            // 关闭模态框、刷新列表
+            hideImportTempEmailModal();
             delete accountsCache['temp'];
             loadTempEmails(true);
 

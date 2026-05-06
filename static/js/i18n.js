@@ -312,6 +312,7 @@
         '暂无临时邮箱': 'No temp mailboxes yet',
         '选择一个临时邮箱': 'Select a temp mailbox',
         '请输入邮箱地址': 'Please enter an email address',
+        '请输入邮箱信息': 'Please enter email info',
         '正在导入…': 'Importing…',
         '导入成功': 'Import successful',
         '导入失败': 'Import failed',

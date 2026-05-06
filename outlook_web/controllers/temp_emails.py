@@ -124,9 +124,11 @@ def api_generate_temp_email() -> Any:
 
 @login_required
 def api_import_temp_email() -> Any:
-    """导入已有临时邮箱"""
+    """导入已有临时邮箱（支持可选 JWT 直传 + 指定 provider）"""
     data = request.json or {}
     email = str(data.get("email") or "").strip()
+    jwt_token = str(data.get("jwt") or "").strip() or None
+    provider_name = str(data.get("provider_name") or "").strip() or None
 
     if not email:
         return build_error_response(
@@ -145,7 +147,11 @@ def api_import_temp_email() -> Any:
         )
 
     try:
-        mailbox = temp_mail_service.import_user_mailbox(email, allow_local_fallback=False)
+        # 如果提供了 JWT，直接落库（跳过 CF Worker 创建步骤）
+        if jwt_token:
+            mailbox = temp_mail_service.import_user_mailbox_with_jwt(email, jwt_token, provider_name=provider_name)
+        else:
+            mailbox = temp_mail_service.import_user_mailbox(email, allow_local_fallback=False, provider_name=provider_name)
         log_audit("import", "temp_email", email, "导入临时邮箱")
         return jsonify(
             {
