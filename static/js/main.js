@@ -56,13 +56,19 @@
         // 从后端读取布局状态
         async function loadLayoutFromServer() {
             try {
-                const response = await fetch('/api/settings');
+                const response = await fetch('/api/bootstrap');
                 const data = await response.json();
-                if (data.success && data.settings && data.settings.ui_layout_v2) {
-                    const layout = data.settings.ui_layout_v2;
-                    if (layout.version === 2) {
-                        uiLayoutV2 = layout;
-                        return layout;
+                if (data.success && data.bootstrap) {
+                    // 缓存轮询设置供 initPollingSettings 使用，避免重复请求
+                    if (!window.__bootstrapPollingSettings) {
+                        window.__bootstrapPollingSettings = data.bootstrap;
+                    }
+                    if (data.bootstrap.ui_layout_v2) {
+                        const layout = data.bootstrap.ui_layout_v2;
+                        if (layout.version === 2) {
+                            uiLayoutV2 = layout;
+                            return layout;
+                        }
                     }
                 }
             } catch (error) {
@@ -935,8 +941,8 @@
             // 加载数据概览
             if (typeof initOverview === 'function') initOverview();
 
-            // 检查是否有版本更新（页面加载时调一次）
-            checkVersionUpdate();
+            // 检查是否有版本更新（延迟 5 秒触发，避免首屏抢占唯一 sync worker）
+            setTimeout(checkVersionUpdate, 5000);
         });
 
         // 初始化颜色选择器
@@ -2962,11 +2968,18 @@ ${details}
         // 初始化轮询设置
         async function initPollingSettings() {
             try {
+                // 优先使用 bootstrap 已缓存的轮询设置，避免首页阶段重复请求 /api/settings
+                const cached = window.__bootstrapPollingSettings;
+                if (cached) {
+                    applyPollingSettings(cached);
+                    delete window.__bootstrapPollingSettings;
+                    return;
+                }
+                // 降级：如果 bootstrap 未执行或失败，回退到 /api/settings
                 const response = await fetch('/api/settings');
                 const data = await response.json();
 
                 if (data.success) {
-                    // [Phase 3] 统一使用 applyPollingSettings（内部已调用引擎 applyPollSettings）
                     applyPollingSettings(data.settings);
                 }
             } catch (error) {

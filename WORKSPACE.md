@@ -4,6 +4,253 @@
 
 ---
 
+## 2026-05-22
+
+### 操作记录
+
+#### 287. Issue #69 协作接力状态回填：当前实现由其他 agent 继续推进
+
+**时间**：2026-05-22
+
+**操作背景**：
+用户说明当前正在让其他 agent 继续 Issue #69 的实现，因此需要把协作接力状态同步进仓库文档，避免后续执行者只看早期分析文档而忽略最新仓库状态。
+
+**本次操作**：
+
+1. 更新 `docs/TODO/2026-05-22-Issue69-性能问题缓解与部署演进TODO.md`
+   - 顶部当前状态改为“实施已由其他 agent 接力推进”
+
+2. 更新 `docs/DEV/2026-05-22-Issue69-性能问题缓解与部署演进-实施提示词.md`
+   - 补充协作说明：若 BUG / TODO / WORKSPACE 已有新进展，应以最新仓库状态为准继续推进
+
+**是否修改业务代码**：否
+
+**是否启动/停止服务**：否
+
+**现场状态**：
+- 当前处于协作接力阶段
+- 本轮仅做文档状态同步与 WORKSPACE 记录
+- 未执行任何服务、测试或部署动作
+
+---
+
+#### 286. Issue #69 — Phase 1 首屏降载实施完成
+
+**时间**：2026-05-22
+
+**操作背景**：
+基于 Issue #69 的分析文档和 TODO 规划，执行 Phase 1 首屏降载最小改造。目标是在不改变部署架构（仍为单 sync worker）的前提下，降低首屏阶段的请求排队放大效应。
+
+**本次改动**：
+
+1. **`static/js/main.js`** — version-check 懒加载
+   - `checkVersionUpdate()` 从 `DOMContentLoaded` 同步调用改为 `setTimeout(checkVersionUpdate, 5000)` 延迟 5 秒
+   - 避免首屏阶段外网 GitHub API 请求抢占唯一 sync worker
+
+2. **`outlook_web/repositories/groups.py`** — 新增聚合查询方法
+   - 新增 `load_groups_with_account_count()` 函数
+   - 使用单 SQL（LEFT JOIN + GROUP BY）替代 N+1 循环查询
+   - 保留原有 `get_group_account_count()` 供单分组查询使用
+
+3. **`outlook_web/controllers/groups.py`** — 使用聚合查询
+   - `api_get_groups()` 改用 `load_groups_with_account_count()`
+   - 临时邮箱分组数量仍从 `temp_emails_repo` 获取
+   - 返回结构完全兼容前端
+
+4. **`outlook_web/controllers/system.py`** — 新增轻量 bootstrap 端点
+   - 新增 `api_bootstrap()` 函数
+   - 只查 6 个 settings key（`ui_layout_v2` + 5 个轮询配置），不做解密/聚合/统计
+   - 替代首页阶段对 `/api/settings` 的 2 次重查询
+
+5. **`outlook_web/routes/system.py`** — 注册 bootstrap 路由
+   - 新增 `GET /api/bootstrap` → `api_bootstrap`
+
+6. **`static/js/main.js`** — 前端改用 bootstrap 端点
+   - `loadLayoutFromServer()` 改为请求 `/api/bootstrap`（替代 `/api/settings`）
+   - 缓存 bootstrap 响应中的轮询设置到 `window.__bootstrapPollingSettings`
+   - `initPollingSettings()` 优先使用缓存数据，降级时才回退到 `/api/settings`
+   - 消除首页阶段对 `/api/settings` 的 2 次重复请求
+
+**修改文件清单**：
+
+| 文件 | 改动内容 |
+|------|----------|
+| `static/js/main.js` | version-check 延迟 5 秒 + loadLayout/initPolling 改用 bootstrap |
+| `outlook_web/repositories/groups.py` | 新增 `load_groups_with_account_count()` 聚合查询 |
+| `outlook_web/controllers/groups.py` | `api_get_groups()` 使用聚合查询 |
+| `outlook_web/controllers/system.py` | 新增 `api_bootstrap()` 轻量端点 |
+| `outlook_web/routes/system.py` | 注册 `GET /api/bootstrap` |
+
+**首页请求链路变化**：
+
+| 阶段 | 修改前 | 修改后 |
+|------|--------|--------|
+| DOMContentLoaded | `/api/csrf-token` → `/api/settings`（重）→ `/api/groups`（N+1）→ `/api/tags` → `/api/settings`（重）→ `checkVersionUpdate` | `/api/csrf-token` → `/api/bootstrap`（轻）→ `/api/groups`（单 SQL）→ `/api/tags` → 轮询用缓存 → 无 version-check |
+| 延迟 5s | — | `/api/system/version-check` |
+| 用户触发 | — | `/api/settings`（仅打开设置时） |
+
+**验证结果**：
+
+1. 语法检查：`python -m compileall` — 全部通过
+2. 相关测试：40 个测试全部通过（overview / settings / groups / policy）
+3. 端点验证：`/api/bootstrap` 返回 200 + 正确字段；`/api/groups` 返回 account_count
+4. 接口兼容：返回结构未改变，前端无需适配
+
+**未做的事（按约束）**：
+- ❌ 未改 Gunicorn worker 数量
+- ❌ 未切 gevent
+- ❌ 未动 scheduler
+- ❌ 未破坏已有接口返回结构
+
+**是否修改业务代码**：是
+
+**是否启动/停止服务**：否
+
+**现场状态**：
+- Phase 1 代码改动已完成
+- 文档已回填（BUG / TODO / WORKSPACE）
+- 待用户确认是否需要启动服务进行人工验收
+
+---
+
+#### 285. Issue #69 实施提示词：为后续 AI/协作者输出统一执行入口
+
+**时间**：2026-05-22
+
+**操作背景**：
+用户要求再产出一段“可直接交给其他用户/其他 AI”的提示词，用于让后续执行者拿到统一上下文后，直接进入 Issue #69 的优化工作，而不是重新误判问题。
+
+**本次操作**：
+
+1. 参考既有实现提示词样式
+   - 对照 `docs/DEV/2026-05-20-Issue64-批量开启邮件通知与批量获取邮件-实现提示词.md`
+   - 沿用“角色设定 / 必读文档 / 当前共识 / 禁止事项 / 实施顺序 / 输出要求 / 成功标准”结构
+
+2. 新增 `docs/DEV/2026-05-22-Issue69-性能问题缓解与部署演进-实施提示词.md`
+   - 明确要求先读 BUG/TODO/CLAUDE 文档
+   - 明确第一优先级是 **Phase 1：首屏降载**
+   - 明确禁止直接多 worker、禁止无验证直接切 gevent
+   - 明确输出要求与成功标准
+
+**是否修改业务代码**：否
+
+**是否启动/停止服务**：否
+
+**现场状态**：
+- 本轮仅新增实施提示词文档并同步记录
+- 未改变任何运行态
+- 未执行测试与部署动作
+
+---
+
+#### 284. Issue #69 拆分 TODO：形成性能缓解与部署演进执行清单
+
+**时间**：2026-05-22
+
+**操作背景**：
+用户要求把 Issue #69 继续拆成可执行任务，而不是只停留在 BUG 分析层。目标是输出一份能指导后续推进顺序的 TODO 文档，并继续同步到 WORKSPACE。
+
+**本次操作**：
+
+1. 参考历史 TODO 文档结构
+   - 对照 `docs/TODO/2026-05-03-Issue57-批量刷新卡12-50修复TODO.md`、`docs/TODO/2026-05-20-Issue64-批量开启邮件通知与批量获取邮件TODO.md`
+   - 继承“会话约束 + 阶段拆分 + 当前状态”结构
+
+2. 新增 `docs/TODO/2026-05-22-Issue69-性能问题缓解与部署演进TODO.md`
+   - 拆为 6 个阶段：
+     - Phase 0：基线确认与观测口径
+     - Phase 1：首屏降载
+     - Phase 2：接口缓存与查询收敛
+     - Phase 3：gevent 单 worker 评估
+     - Phase 4：scheduler 拆分设计
+     - Phase 5：回归、灰度与验收
+   - 明确当前主线：**优先 Phase 1（首屏降载）**
+
+**是否修改业务代码**：否
+
+**是否启动/停止服务**：否
+
+**现场状态**：
+- 本轮仅新增 TODO 文档并回填记录
+- 未改变服务运行状态
+- 未执行测试与部署动作
+
+---
+
+#### 283. Issue #69 BUG 文档深化：补充根因拆解、观测指标、验证标准与风险约束
+
+**时间**：2026-05-22
+
+**操作背景**：
+用户要求把 Issue #69 的 BUG 文档继续写深，不只停留在“单 worker 慢”这一层，而是把问题放大路径、阶段化解法、验证指标和风险边界补齐，便于后续真正落地优化。
+
+**本次操作**：
+
+1. 复读同类 BUG 文档风格
+   - 参考 `docs/BUG/2026-05-03-Issue57-批量刷新卡12-50-限流与超时缺陷.md` 等历史文档结构
+   - 补齐状态、优先级、深层根因、验证思路、风险约束等缺口
+
+2. 深化 `docs/BUG/2026-05-22-Issue69-单Gunicorn-sync-worker导致页面加载极慢.md`
+   - 新增文档头部元信息（状态 / 优先级 / 关联模块）
+   - 新增“更深一层的根因拆解”
+   - 新增“建议执行顺序”与“为什么不是直接上 gevent”
+   - 新增“建议观测指标”
+   - 新增“验证思路”
+   - 新增“风险与约束”表格
+
+**是否修改业务代码**：否
+
+**是否启动/停止服务**：否
+
+**现场状态**：
+- 本轮继续只做文档深化与分析回填
+- 未新增任何服务进程操作
+- 未改变仓库运行态
+
+---
+
+#### 282. Issue #69 性能问题分析回填：单 Gunicorn sync worker、首屏排队与调度器耦合
+
+**时间**：2026-05-22
+
+**操作背景**：
+基于 GitHub Issue #69（“单 gunicorn sync worker 导致页面加载极慢”）做只读分析。目标不是直接改代码，而是先厘清真实瓶颈，并把结论回填到仓库文档中，避免后续继续沿用不准确的“单 worker 必然更安全”表述。
+
+**本次操作**：
+
+1. Issue 与代码上下文核对
+   - 读取 `gh issue view 69 --repo ZeroPointSix/outlookEmailPlus --comments`
+   - 读取 `gh api repos/ZeroPointSix/outlookEmailPlus/issues/69`
+   - 核对 `Dockerfile`、`outlook_web/app.py`、`outlook_web/services/scheduler.py`、`static/js/main.js`、`outlook_web/controllers/system.py` 等关键文件
+
+2. 核心分析结论
+   - 当前问题不只是 `gunicorn -w 1`，而是：
+     - 单 sync worker 请求串行
+     - 首屏初始化会触发多条 API 请求
+     - `/api/settings`、`/api/groups`、`/api/accounts`、`/api/overview/summary` 存在不同程度首屏负载
+     - `/api/system/version-check` 冷缓存时会同步访问 GitHub API
+     - APScheduler 与 Web 进程仍耦合，导致“直接多 worker”并不安全
+   - 额外修正：当前仓库多 worker 的主要风险并不是 Flask 默认 session，而是 scheduler 重复启动与若干单进程假设
+
+3. 文档更新
+   - 新增 `docs/BUG/2026-05-22-Issue69-单Gunicorn-sync-worker导致页面加载极慢.md`
+     - 记录问题背景、代码证据、真实成因、短中长期优化路径
+   - 更新 `CLAUDE.md`
+     - 补充 Deployment Notes，明确 Issue #69 的部署约束与优化顺序
+   - 更新 `docs/TD/2026-04-11-邮件获取性能优化TD.md`
+     - 在 3.3 增补 Issue #69 注记，修正“单 worker = 长期架构前提”的过强表述
+
+**是否修改业务代码**：否
+
+**是否启动/停止服务**：否
+
+**现场状态**：
+- 本次仅进行 issue 分析与文档回填
+- 未修改运行中服务状态
+- 未新增测试、构建或进程操作
+
+---
+
 ## 2026-05-20
 
 ### 操作记录
