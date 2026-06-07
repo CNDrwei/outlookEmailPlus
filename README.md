@@ -188,6 +188,9 @@ services:
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:-outlook-mail-plus-watchtower-default}
       - WATCHTOWER_HTTP_API_UPDATE=true
       - WATCHTOWER_CLEANUP=true
+      # 可选：Docker 29.0-29.2 若报 client version too old，可在 .env 设置 WATCHTOWER_DOCKER_API_VERSION=1.44
+      # 默认留空以保留 Docker API 自动协商，避免旧 Docker Engine 被强制使用过高 API 版本
+      - DOCKER_API_VERSION=${WATCHTOWER_DOCKER_API_VERSION:-}
       - WATCHTOWER_HTTP_API_PERIODIC_POLLS=false
     command: --http-api-update --label-enable
     labels:
@@ -214,12 +217,12 @@ networks:
 3. 在设置页选择"更新方式"为"Docker API"
 4. ⚠️ 请充分了解安全风险后再启用
 
-> ⚠️ **常见问题**：如果 Watchtower 容器日志中出现 `client version 1.25 is too old. Minimum supported API version is 1.44` 错误，说明你本地缓存了旧版 Watchtower 镜像（内嵌的 Docker 客户端 API 版本过旧）。解决方法：
+> ⚠️ **常见问题**：如果 Watchtower 容器日志中出现 `client version 1.25 is too old. Minimum supported API version is 1.44` 错误，说明当前 Docker Engine 要求更高的 Docker API 版本，而 Watchtower 的默认客户端 API 版本偏低。为避免影响旧版 Docker Engine，`docker-compose.yml` 默认保留自动协商；遇到该错误时可在 `.env` 中设置 `WATCHTOWER_DOCKER_API_VERSION=1.44`，然后执行：
 > ```bash
-> docker compose pull watchtower    # 拉取最新镜像
-> docker compose up -d watchtower   # 重建容器
+> docker compose pull watchtower    # 拉取镜像
+> docker compose up -d watchtower   # 用新配置重建容器
 > ```
-> 本项目 `docker-compose.yml` 已固定 Watchtower 版本为 `1.7.1`，可避免此类问题。
+> 如果仍使用 Docker 24 或更早版本，请不要设置此覆盖项，或设置为该 Docker Engine 支持的 API 版本。
 
 #### ClawCloud / 反向代理部署注意事项
 
@@ -284,6 +287,8 @@ python -m unittest discover -s tests -v
   Watchtower API 鉴权令牌。**可留空**，留空时 app 和 watchtower 两边自动使用同一内置默认值，开箱即用；生产环境建议设置随机强密码
 - `WATCHTOWER_API_URL`
   Watchtower API 地址，默认 `http://watchtower:8080`（Docker 内部网络，通常无需修改）
+- `WATCHTOWER_DOCKER_API_VERSION`
+  Watchtower Docker API 版本覆盖项。默认留空，保留 API 自动协商；仅当 Docker 29.0-29.2 出现 `client version too old` 时建议设为 `1.44`
 - `DOCKER_SELF_UPDATE_ALLOW`
   是否启用 Docker API 自更新功能，默认 `false`。⚠️ 启用后容器可访问 Docker API，存在安全风险
 - `DOCKER_IMAGE`
