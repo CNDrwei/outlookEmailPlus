@@ -253,6 +253,9 @@
                 const latestEmailReceivedAt = account.latest_email_received_at || '';
                 const latestVerificationCode = account.latest_verification_code || '';
                 const isChecked = selectedAccountIds.has(account.id);
+                const isOutlookSmsAccount = String(account.provider || '').toLowerCase() === 'outlook_sms';
+                const phoneNumber = (account.phone_number || '').trim();
+                const hasSmsCodeUrl = Boolean((account.sms_code_url || '').trim());
                 const tagHtml = (account.tags || []).map(tag => `
                     <span class="tag-chip">${escapeHtml(tag.name)}</span>
                 `).join('');
@@ -282,17 +285,26 @@
                                 title="${escapeHtml(translateCompactText('点击复制邮箱地址'))}"
                             >
                                 <span class="mail-address">${escapeHtml(account.email || '')}</span>
-                                <div class="mail-meta" title="${escapeHtml(`${providerText} · ${statusText}`)}">
-                                    ${escapeHtml(providerText)} · ${escapeHtml(statusText)}
+                                <div class="mail-meta" title="${escapeHtml(`${providerText} · ${statusText}${phoneNumber ? ` · ${phoneNumber}` : ''}`)}">
+                                    ${escapeHtml(providerText)} · ${escapeHtml(statusText)}${phoneNumber ? ` · 📱 ${escapeHtml(phoneNumber)}` : ''}
                                 </div>
                             </button>
                         </div>
                         <div class="mail-code" data-label="${escapeHtml(translateCompactText('验证码'))}">
-                            <button
-                                class="code-button ${latestVerificationCode ? '' : 'empty'}"
-                                onclick="copyCompactVerification(getCompactAccountById(${account.id}), this)"
-                                title="${escapeHtml(translateCompactText(latestVerificationCode ? '复制当前摘要验证码' : '无摘要码时兜底提取验证码'))}"
-                            >${escapeHtml(latestVerificationCode || translateCompactText('暂无'))}</button>
+                            <div class="compact-code-stack">
+                                <button
+                                    class="code-button ${latestVerificationCode ? '' : 'empty'}"
+                                    onclick="copyCompactVerification(getCompactAccountById(${account.id}), this)"
+                                    title="${escapeHtml(translateCompactText(latestVerificationCode ? '复制当前摘要验证码' : '无摘要码时兜底提取验证码'))}"
+                                >${escapeHtml(latestVerificationCode || translateCompactText('暂无'))}</button>
+                                ${isOutlookSmsAccount && hasSmsCodeUrl ? `
+                                    <button
+                                        class="code-button sms-code-button"
+                                        onclick="event.stopPropagation(); fetchAccountSmsCode(${account.id}, this)"
+                                        title="${escapeHtml(translateCompactText('获取短信验证码'))}"
+                                    >📱 ${escapeHtml(translateCompactText('短信码'))}</button>
+                                ` : ''}
+                            </div>
                         </div>
                         <div class="mail-snippet" data-label="${escapeHtml(translateCompactText('最新邮件'))}">
                             <div class="snippet-subject" title="${escapeHtml(latestEmailSubject)}">${escapeHtml(latestEmailSubject)}</div>

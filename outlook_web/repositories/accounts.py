@@ -394,6 +394,8 @@ def add_account(
     imap_host: str = "",
     imap_port: int = 993,
     imap_password: str = "",
+    phone_number: str = "",
+    sms_code_url: str = "",
     add_to_pool: bool = False,
     db: Optional[sqlite3.Connection] = None,
     commit: bool = True,
@@ -427,9 +429,9 @@ def add_account(
             INSERT INTO accounts (
                 email, password, client_id, refresh_token,
                 account_type, provider, imap_host, imap_port, imap_password,
-                group_id, remark, pool_status, email_domain
+                group_id, remark, pool_status, email_domain, phone_number, sms_code_url
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 email_addr,
@@ -445,6 +447,8 @@ def add_account(
                 remark,
                 initial_pool_status,
                 email_domain,
+                (phone_number or "").strip(),
+                (sms_code_url or "").strip(),
             ),
         )
         if commit:

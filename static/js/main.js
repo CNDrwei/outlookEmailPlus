@@ -315,7 +315,7 @@
         function isRefreshableOutlookAccount(accountLike) {
             const accountType = String(accountLike?.account_type || 'outlook').trim().toLowerCase();
             const provider = String(accountLike?.provider || 'outlook').trim().toLowerCase();
-            return accountType !== 'imap' && provider === 'outlook';
+            return accountType !== 'imap' && (provider === 'outlook' || provider === 'outlook_sms');
         }
 
         function formatSelectedItemsLabel(count) {

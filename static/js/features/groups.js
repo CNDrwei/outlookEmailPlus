@@ -225,6 +225,7 @@
             const key = (provider || 'outlook').toString().toLowerCase();
             const labels = {
                 outlook: 'Outlook',
+                outlook_sms: 'Outlook 带短信验证码',
                 gmail: 'Gmail',
                 qq: 'QQ 邮箱',
                 '163': '163 邮箱',
@@ -286,6 +287,12 @@
                     ? !!acc.notification_enabled
                     : !!acc.telegram_push_enabled;
                 const isCfPoolAccount = String(acc.provider || '').toLowerCase() === 'cloudflare_temp_mail';
+                const isOutlookSmsAccount = String(acc.provider || '').toLowerCase() === 'outlook_sms';
+                const phoneNumber = (acc.phone_number || '').trim();
+                const hasSmsCodeUrl = Boolean((acc.sms_code_url || '').trim());
+                const phoneHtml = phoneNumber
+                    ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">📱 ${escapeHtml(translateAppTextLocal('手机号'))}: ${escapeHtml(phoneNumber)}</div>`
+                    : '';
 
                 let tokenBadge = `<span class="badge badge-gray">IMAP</span>`;
                 if (supportsTokenRefresh) {
@@ -317,6 +324,7 @@
                                 ${escapeHtml(acc.email)}
                             </div>
                             ${acc.remark && acc.remark.trim() ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">📝 ${escapeHtml(translateAppTextLocal('备注'))}: ${escapeHtml(acc.remark)}</div>` : ''}
+                            ${phoneHtml}
                             <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">
                                 ${providerTagHtml}
                                 ${(acc.tags || []).map(tag => `<span class="tag" style="background-color:${tag.color};color:white;">${escapeHtml(tag.name)}</span>`).join('')}
@@ -333,6 +341,7 @@
                         <div class="account-actions">
                             <button class="btn-icon ${notificationEnabled ? 'tg-push-active' : ''}" onclick="event.stopPropagation(); toggleTelegramPush(${acc.id}, ${!notificationEnabled})" title="${escapeHtml(translateAppTextLocal(notificationEnabled ? '该邮箱通知参与（已开启）' : '开启该邮箱通知参与'))}">🔔</button>
                             <button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); copyVerificationInfo('${escapeJs(acc.email)}', this)" title="${escapeHtml(translateAppTextLocal('验证码'))}" style="font-size:0.72rem;padding:2px 8px;">🔑 ${escapeHtml(translateAppTextLocal('验证码'))}</button>
+                            ${isOutlookSmsAccount && hasSmsCodeUrl ? `<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); fetchAccountSmsCode(${acc.id}, this)" title="${escapeHtml(translateAppTextLocal('获取短信验证码'))}" style="font-size:0.72rem;padding:2px 8px;">📱 ${escapeHtml(translateAppTextLocal('短信码'))}</button>` : ''}
                             <button class="btn-icon" onclick="event.stopPropagation(); copyEmail('${escapeJs(acc.email)}')" title="${escapeHtml(translateAppTextLocal('复制'))}">📋</button>
                             ${isCfPoolAccount
                                 ? `<button class="btn-icon" disabled title="${escapeHtml(translateAppTextLocal('邮箱池管理的账号不支持编辑'))}" style="opacity:0.3;cursor:not-allowed;">✏️</button>`
@@ -885,6 +894,60 @@
             } catch (fallbackError) {
                 console.error('本地兜底提取失败:', fallbackError);
                 return null;
+            }
+        }
+
+        async function fetchAccountSmsCode(accountId, buttonElement) {
+            if (!accountId || !buttonElement) {
+                return false;
+            }
+
+            const originalContent = buttonElement.innerHTML;
+            buttonElement.disabled = true;
+            buttonElement.innerHTML = '⏳';
+            buttonElement.style.opacity = '0.6';
+            buttonElement.style.cursor = 'wait';
+
+            try {
+                const response = await fetch(`/api/accounts/${accountId}/fetch-sms-code`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                const formatted = data?.data?.formatted || data?.data?.code || '';
+
+                if (data.success && formatted) {
+                    await copyToClipboard(formatted);
+                    showToast(
+                        getUiLanguage() === 'en'
+                            ? `Copied SMS code: ${formatted}`
+                            : `已复制短信验证码: ${formatted}`,
+                        'success'
+                    );
+                    buttonElement.innerHTML = '✅';
+                    buttonElement.style.opacity = '1';
+                    return true;
+                }
+
+                const errorMsg = window.resolveApiErrorMessage
+                    ? window.resolveApiErrorMessage(data.error || data, '获取短信验证码失败', 'Failed to fetch SMS verification code')
+                    : (data.error?.message || data.message || '获取短信验证码失败');
+                showToast(errorMsg, 'error');
+                buttonElement.innerHTML = '❌';
+                buttonElement.style.opacity = '1';
+                return false;
+            } catch (error) {
+                console.error('获取短信验证码失败:', error);
+                showToast(translateAppTextLocal('网络错误，请重试'), 'error');
+                buttonElement.innerHTML = '❌';
+                buttonElement.style.opacity = '1';
+                return false;
+            } finally {
+                setTimeout(() => {
+                    buttonElement.disabled = false;
+                    buttonElement.innerHTML = originalContent;
+                    buttonElement.style.cursor = 'pointer';
+                }, 1500);
             }
         }
 

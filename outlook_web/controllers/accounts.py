@@ -237,6 +237,8 @@ def api_get_accounts() -> Any:
                 "latest_verification_code": acc.get("latest_verification_code", ""),
                 "latest_verification_folder": acc.get("latest_verification_folder", ""),
                 "latest_verification_received_at": acc.get("latest_verification_received_at", ""),
+                "phone_number": acc.get("phone_number", "") or "",
+                "sms_code_url": acc.get("sms_code_url", "") or "",
             }
         )
     return jsonify(
@@ -292,6 +294,8 @@ def api_get_account(account_id: int) -> Any:
                 "latest_verification_code": account.get("latest_verification_code", ""),
                 "latest_verification_folder": account.get("latest_verification_folder", ""),
                 "latest_verification_received_at": account.get("latest_verification_received_at", ""),
+                "phone_number": account.get("phone_number", "") or "",
+                "sms_code_url": account.get("sms_code_url", "") or "",
                 "created_at": account.get("created_at", ""),
                 "updated_at": account.get("updated_at", ""),
             },
@@ -320,6 +324,13 @@ def api_add_account() -> Any:
     # FD-00006: auto 模式允许 group_id=null（自动分组），需在分组校验前分流
     if provider == "auto":
         return _handle_auto_import(data, add_to_pool=add_to_pool)
+
+    if provider == "outlook_sms":
+        return _handle_outlook_sms_import(
+            account_str=account_str,
+            group_id=group_id,
+            add_to_pool=add_to_pool,
+        )
 
     # 校验分组
     target_group = groups_repo.get_group_by_id(group_id)
@@ -374,7 +385,7 @@ def api_add_account() -> Any:
     # -------------------- IMAP provider 导入分支 --------------------
     # 对齐：PRD-00005 / FD-00005 / TDD-00005
     # 约束：不改动 Outlook 旧格式；IMAP 账号使用 client_id/refresh_token 空字符串占位（DB NOT NULL 约束不变）。
-    if provider and provider != "outlook":
+    if provider and provider not in ("outlook", "outlook_sms"):
         from outlook_web.services.providers import MAIL_PROVIDERS
 
         provider_cfg = MAIL_PROVIDERS.get(provider, {})
@@ -735,6 +746,227 @@ def api_add_account() -> Any:
         return jsonify({"success": True, "message": message, "summary": summary, "errors": errors})
 
     return _build_account_import_failure_response(message, summary=summary, errors=errors)
+
+
+def _parse_outlook_sms_import_records(account_str: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    text = (account_str or "").strip()
+    records: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    if not text:
+        return records, errors
+
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            errors.append({"line": 1, "error": f"JSON 解析失败: {exc}"})
+            return records, errors
+        if isinstance(payload, dict):
+            records = [payload]
+        elif isinstance(payload, list):
+            records = [item for item in payload if isinstance(item, dict)]
+            if not records and payload:
+                errors.append({"line": 1, "error": "JSON 数组中未找到有效对象"})
+        else:
+            errors.append({"line": 1, "error": "JSON 格式无效，应为对象或对象数组"})
+        return records, errors
+
+    for line_no, raw in enumerate(account_str.splitlines(), start=1):
+        line = (raw or "").strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            errors.append({"line": line_no, "error": "JSON 行解析失败"})
+            continue
+        if not isinstance(item, dict):
+            errors.append({"line": line_no, "error": "每行 JSON 必须是对象"})
+            continue
+        item["_line"] = line_no
+        records.append(item)
+    return records, errors
+
+
+def _normalize_outlook_sms_record(record: dict[str, Any]) -> dict[str, str]:
+    email = str(record.get("email") or record.get("recordId") or "").strip()
+    password = str(record.get("password") or record.get("signupPassword") or "").strip()
+    client_id = str(record.get("clientId") or record.get("client_id") or "").strip()
+    refresh_token = str(record.get("refreshToken") or record.get("refresh_token") or "").strip()
+    phone_number = str(record.get("phoneNumber") or record.get("phone_number") or "").strip()
+    sms_code_url = str(record.get("smsCodeUrl") or record.get("sms_code_url") or "").strip()
+    return {
+        "email": email,
+        "password": password,
+        "client_id": client_id,
+        "refresh_token": refresh_token,
+        "phone_number": phone_number,
+        "sms_code_url": sms_code_url,
+    }
+
+
+def _handle_outlook_sms_import(*, account_str: str, group_id: int, add_to_pool: bool) -> Any:
+    target_group = groups_repo.get_group_by_id(group_id)
+    if not target_group:
+        return build_error_response("GROUP_NOT_FOUND", "分组不存在", message_en="Group not found", status=404)
+    if target_group.get("is_system"):
+        return build_error_response(
+            "SYSTEM_GROUP_PROTECTED",
+            "不能导入到系统分组",
+            message_en="Cannot import accounts into a system group",
+            status=403,
+        )
+
+    records, parse_errors = _parse_outlook_sms_import_records(account_str)
+    imported = 0
+    failed = len(parse_errors)
+    errors: list[dict[str, Any]] = list(parse_errors)
+    errors_total = failed
+    max_error_details = 50
+    db = get_db()
+
+    for index, record in enumerate(records, start=1):
+        line_no = int(record.get("_line") or index)
+        normalized = _normalize_outlook_sms_record(record)
+        email_addr = sanitize_input(normalized.get("email", ""), max_length=320)
+        password = sanitize_input(normalized.get("password", ""), max_length=500)
+        client_id = sanitize_input(normalized.get("client_id", ""), max_length=200)
+        refresh_token = sanitize_input(normalized.get("refresh_token", ""), max_length=4096)
+        phone_number = sanitize_input(normalized.get("phone_number", ""), max_length=32)
+        sms_code_url = sanitize_input(normalized.get("sms_code_url", ""), max_length=2000)
+
+        if not email_addr or not client_id or not refresh_token:
+            failed += 1
+            errors_total += 1
+            if len(errors) < max_error_details:
+                errors.append(
+                    {
+                        "line": line_no,
+                        "email": email_addr,
+                        "error": "缺少 email / clientId / refreshToken",
+                    }
+                )
+            continue
+
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email_addr):
+            failed += 1
+            errors_total += 1
+            if len(errors) < max_error_details:
+                errors.append({"line": line_no, "email": email_addr, "error": "邮箱格式不正确"})
+            continue
+
+        ok = accounts_repo.add_account(
+            email_addr,
+            password,
+            client_id,
+            refresh_token,
+            group_id,
+            account_type="outlook",
+            provider="outlook_sms",
+            phone_number=phone_number,
+            sms_code_url=sms_code_url,
+            add_to_pool=add_to_pool,
+            db=db,
+            commit=False,
+        )
+        if ok:
+            imported += 1
+            continue
+
+        failed += 1
+        errors_total += 1
+        reason = "写入失败"
+        try:
+            exists = db.execute("SELECT 1 FROM accounts WHERE email = ? LIMIT 1", (email_addr,)).fetchone()
+            if exists:
+                reason = "邮箱已存在"
+        except Exception:
+            pass
+        if len(errors) < max_error_details:
+            errors.append({"line": line_no, "email": email_addr, "error": reason})
+
+    summary = {
+        "group_id": group_id,
+        "total_lines": len(records),
+        "imported": imported,
+        "failed": failed,
+        "errors_total": errors_total,
+        "errors_returned": len(errors),
+        "errors_truncated": errors_total > len(errors),
+    }
+    message = f"导入完成：成功 {imported} 个，失败 {failed} 个"
+
+    if imported > 0:
+        try:
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return build_error_response(
+                "ACCOUNT_IMPORT_DB_WRITE_FAILED",
+                "数据库写入失败，请重试",
+                message_en="Database write failed. Please try again",
+                status=500,
+            )
+        log_audit(
+            "import",
+            "account",
+            None,
+            f"{message}，目标分组ID={group_id}，provider=outlook_sms",
+        )
+        return jsonify({"success": True, "message": message, "summary": summary, "errors": errors})
+
+    return _build_account_import_failure_response(message, summary=summary, errors=errors)
+
+
+@login_required
+def api_fetch_account_sms_code(account_id: int) -> Any:
+    account = accounts_repo.get_account_by_id(account_id)
+    if not account:
+        return build_error_response(
+            "ACCOUNT_NOT_FOUND",
+            "账号不存在",
+            message_en="Account not found",
+            status=404,
+        )
+
+    sms_code_url = (account.get("sms_code_url") or "").strip()
+    if not sms_code_url:
+        return build_error_response(
+            "SMS_CODE_URL_MISSING",
+            "该账号未配置短信验证码接口",
+            message_en="SMS code URL is not configured for this account",
+            status=400,
+        )
+
+    from outlook_web.services.sms_code_fetcher import fetch_sms_code
+
+    result = fetch_sms_code(sms_code_url)
+    if not result.get("success"):
+        return build_error_response(
+            "SMS_CODE_FETCH_FAILED",
+            result.get("error") or "获取短信验证码失败",
+            message_en=result.get("error_en") or "Failed to fetch SMS verification code",
+            status=502,
+        )
+
+    code = (result.get("code") or "").strip()
+    formatted = (result.get("formatted") or code or "").strip()
+    return jsonify(
+        {
+            "success": True,
+            "message": "获取成功" if code else "已获取接口响应，但未识别出验证码",
+            "message_en": "Fetched successfully" if code else "Fetched response but no code was detected",
+            "data": {
+                "code": code,
+                "formatted": formatted,
+                "raw": result.get("raw") or "",
+            },
+        }
+    )
 
 
 @login_required
@@ -2032,6 +2264,8 @@ def api_search_accounts() -> Any:
                 "latest_verification_code": acc.get("latest_verification_code", ""),
                 "latest_verification_folder": acc.get("latest_verification_folder", ""),
                 "latest_verification_received_at": acc.get("latest_verification_received_at", ""),
+                "phone_number": acc.get("phone_number", "") or "",
+                "sms_code_url": acc.get("sms_code_url", "") or "",
             }
         )
 

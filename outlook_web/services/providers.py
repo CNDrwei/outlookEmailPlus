@@ -14,6 +14,13 @@ MAIL_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "account_type": "outlook",
         "note": "使用 OAuth2 认证（client_id + refresh_token）",
     },
+    "outlook_sms": {
+        "label": "Outlook 带短信验证码",
+        "imap_host": "outlook.live.com",
+        "imap_port": 993,
+        "account_type": "outlook",
+        "note": "JSON 批量导入，支持 phoneNumber 与 smsCodeUrl",
+    },
     "gmail": {
         "label": "Gmail",
         "imap_host": "imap.gmail.com",
@@ -94,6 +101,7 @@ DOMAIN_PROVIDER_MAP: Dict[str, str] = {
 # FD-00006: provider → 自动分组名映射
 PROVIDER_GROUP_NAME: Dict[str, str] = {
     "outlook": "Outlook",
+    "outlook_sms": "Outlook 带短信验证码",
     "gmail": "Gmail",
     "qq": "QQ邮箱",
     "163": "163邮箱",
@@ -221,7 +229,7 @@ def get_provider_list() -> List[Dict[str, Any]]:
             "note": "自动识别每行的账号类型，支持混合文件一键导入",
         }
     ]
-    order = ["outlook", "gmail", "qq", "163", "126", "yahoo", "aliyun", "custom"]
+    order = ["outlook", "outlook_sms", "gmail", "qq", "163", "126", "yahoo", "aliyun", "custom"]
     for key in order:
         if key not in MAIL_PROVIDERS:
             continue

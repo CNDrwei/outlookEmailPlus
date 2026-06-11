@@ -195,6 +195,13 @@
                 return;
             }
 
+            if (p === 'outlook_sms') {
+                customFields.style.display = 'none';
+                input.placeholder = translateAppTextLocal('[{"email":"...","password":"...","clientId":"...","refreshToken":"...","phoneNumber":"...","smsCodeUrl":"..."}]');
+                hint.textContent = translateAppTextLocal('格式：粘贴 JSON 数组或单个 JSON 对象；仅需关注 phoneNumber 与 smsCodeUrl，其余字段按导出格式保留即可');
+                return;
+            }
+
             if (p === 'custom') {
                 customFields.style.display = '';
                 input.placeholder = translateAppTextLocal('邮箱----IMAP授权码/应用密码');

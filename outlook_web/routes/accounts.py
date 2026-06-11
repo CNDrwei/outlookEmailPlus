@@ -152,6 +152,11 @@ def create_blueprint() -> Blueprint:
 
     # Telegram 推送开关
     bp.add_url_rule(
+        "/api/accounts/<int:account_id>/fetch-sms-code",
+        view_func=accounts_controller.api_fetch_account_sms_code,
+        methods=["POST"],
+    )
+    bp.add_url_rule(
         "/api/accounts/<int:account_id>/telegram-toggle",
         view_func=accounts_controller.api_telegram_toggle,
         methods=["POST"],

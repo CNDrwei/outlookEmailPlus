@@ -423,6 +423,10 @@ def init_db(database_path: Optional[str] = None):
             cursor.execute("ALTER TABLE accounts ADD COLUMN latest_verification_folder TEXT DEFAULT ''")
         if "latest_verification_received_at" not in columns:
             cursor.execute("ALTER TABLE accounts ADD COLUMN latest_verification_received_at TEXT DEFAULT ''")
+        if "phone_number" not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN phone_number TEXT DEFAULT ''")
+        if "sms_code_url" not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN sms_code_url TEXT DEFAULT ''")
 
         cursor.execute("PRAGMA table_info(groups)")
         group_columns = [col[1] for col in cursor.fetchall()]
