@@ -614,6 +614,43 @@ class CloudflareTempMailProviderTests(unittest.TestCase):
         self.assertFalse(result)
 
     # ------------------------------------------------------------------
+    # resolve_address_credentials
+    # ------------------------------------------------------------------
+
+    def test_resolve_address_credentials_returns_jwt_for_existing_address(self):
+        with self.app.app_context():
+            provider = self._make_provider()
+            list_resp = MagicMock()
+            list_resp.ok = True
+            list_resp.json.return_value = {
+                "results": [
+                    {"id": "addr-999", "name": "hist@cf-mail.example.com"},
+                    {"id": "addr-other", "name": "other@cf-mail.example.com"},
+                ]
+            }
+            jwt_resp = MagicMock()
+            jwt_resp.ok = True
+            jwt_resp.json.return_value = {"jwt": "resolved-jwt-token"}
+
+            with patch("requests.get", side_effect=[list_resp, jwt_resp]):
+                creds = provider.resolve_address_credentials("hist@cf-mail.example.com")
+
+        self.assertIsNotNone(creds)
+        self.assertEqual(creds["jwt"], "resolved-jwt-token")
+        self.assertEqual(creds["address_id"], "addr-999")
+
+    def test_resolve_address_credentials_returns_none_when_address_not_found(self):
+        with self.app.app_context():
+            provider = self._make_provider()
+            list_resp = MagicMock()
+            list_resp.ok = True
+            list_resp.json.return_value = {"results": []}
+            with patch("requests.get", return_value=list_resp):
+                creds = provider.resolve_address_credentials("missing@cf-mail.example.com")
+
+        self.assertIsNone(creds)
+
+    # ------------------------------------------------------------------
     # _normalize_cf_message 字段映射
     # ------------------------------------------------------------------
 

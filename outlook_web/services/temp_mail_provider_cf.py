@@ -282,6 +282,91 @@ class CloudflareTempMailProvider(TempMailProviderBase):
             "provider_debug": {"bridge": "cloudflare_worker"},
         }
 
+    def resolve_address_credentials(self, email_addr: str) -> dict[str, Any] | None:
+        """通过 CF Admin API 为已存在的历史邮箱补全 JWT 与 address_id。"""
+        normalized_email = str(email_addr or "").strip().lower()
+        if not normalized_email:
+            return None
+
+        base_url = self._base_url()
+        if not base_url or not self._admin_key():
+            return None
+
+        try:
+            resp = requests.get(
+                f"{base_url}/admin/address",
+                params={"query": normalized_email, "limit": 20, "offset": 0},
+                headers=self._admin_headers(),
+                timeout=_CF_REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.warning("[cf_provider] resolve credentials list failed email=%s err=%s", normalized_email, exc)
+            return None
+
+        if not resp.ok:
+            logger.warning(
+                "[cf_provider] resolve credentials list HTTP %s email=%s",
+                resp.status_code,
+                normalized_email,
+            )
+            return None
+
+        try:
+            payload = resp.json()
+        except Exception:
+            return None
+
+        candidates = payload.get("results") or payload.get("data") or payload.get("addresses") or []
+        if not isinstance(candidates, list):
+            return None
+
+        matched = None
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "").strip().lower() == normalized_email:
+                matched = item
+                break
+        if not matched:
+            return None
+
+        address_id = str(matched.get("id") or "").strip()
+        if not address_id:
+            return None
+
+        try:
+            jwt_resp = requests.get(
+                f"{base_url}/admin/show_password/{address_id}",
+                headers=self._admin_headers(),
+                timeout=_CF_REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.warning("[cf_provider] resolve credentials jwt failed id=%s err=%s", address_id, exc)
+            return None
+
+        if not jwt_resp.ok:
+            logger.warning(
+                "[cf_provider] resolve credentials jwt HTTP %s id=%s",
+                jwt_resp.status_code,
+                address_id,
+            )
+            return None
+
+        try:
+            jwt_payload = jwt_resp.json()
+        except Exception:
+            return None
+
+        jwt = str(jwt_payload.get("jwt") or "").strip()
+        if not jwt:
+            return None
+
+        return {
+            "jwt": jwt,
+            "address_id": address_id,
+            "provider_mailbox_id": address_id,
+        }
+
     def _raise_http_error(self, resp: requests.Response, *, operation: str) -> None:
         code = _map_cf_http_error(resp.status_code, resp.text)
         raise CloudflareTempMailProviderError(

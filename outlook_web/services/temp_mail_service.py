@@ -8,6 +8,7 @@ from typing import Any
 
 from outlook_web.repositories import temp_emails as temp_emails_repo
 from outlook_web.services.temp_mail_provider_custom import TempMailProviderReadError
+from outlook_web.services.temp_mail_provider_cf import CloudflareTempMailProviderError
 from outlook_web.services.temp_mail_provider_factory import (
     TempMailProviderFactoryError,
     get_temp_mail_provider,
@@ -493,10 +494,17 @@ class TempMailService:
         mailbox = self._get_mailbox_descriptor(email_or_mailbox)
         email_addr = str(mailbox.get("email") or "")
         if sync_remote:
+            mailbox = self._ensure_cf_mailbox_credentials(mailbox)
             # BUG-03: cache-only 场景（sync_remote=False）不得依赖 provider 初始化。
             provider = self._get_provider(mailbox=mailbox)
             try:
                 api_messages = provider.list_messages(mailbox)
+            except CloudflareTempMailProviderError as exc:
+                raise self._provider_read_failed(
+                    TempMailProviderReadError(exc.code, exc.message, data=exc.data),
+                    mailbox=mailbox,
+                    operation="list_messages",
+                ) from exc
             except TempMailProviderReadError as exc:
                 raise self._provider_read_failed(exc, mailbox=mailbox, operation="list_messages") from exc
             if api_messages is None:
@@ -767,7 +775,11 @@ class TempMailService:
             existing = temp_emails_repo.get_temp_email_by_address(email_addr)
             if existing:
                 if jwt:
-                    self._update_mailbox_jwt(existing, jwt, provider_name=provider_key)
+                    self._update_mailbox_provider_meta(existing, jwt=jwt, provider_name=provider_key)
+                elif provider_key == "cloudflare_temp_mail":
+                    self._ensure_cf_mailbox_credentials(
+                        temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor") or existing
+                    )
                 skipped += 1
                 continue
 
@@ -779,7 +791,7 @@ class TempMailService:
                 meta["provider_jwt"] = jwt
 
             try:
-                self._create_or_load_mailbox_record(
+                mailbox = self._create_or_load_mailbox_record(
                     email_addr=email_addr,
                     mailbox_type="user",
                     visible_in_ui=True,
@@ -790,6 +802,10 @@ class TempMailService:
                     provider_name=provider_key,
                     allow_existing=True,
                 )
+                if provider_key == "cloudflare_temp_mail" and not jwt:
+                    descriptor = temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor")
+                    if descriptor:
+                        self._ensure_cf_mailbox_credentials(descriptor)
                 imported += 1
             except TempMailError as exc:
                 failed += 1
@@ -813,6 +829,45 @@ class TempMailService:
             "errors": errors,
         }
 
+    def _ensure_cf_mailbox_credentials(self, mailbox: dict[str, Any]) -> dict[str, Any]:
+        email_addr = str(mailbox.get("email") or "").strip()
+        if not email_addr:
+            return mailbox
+
+        provider_name = str(
+            mailbox.get("provider_name")
+            or (mailbox.get("meta") or {}).get("provider_name")
+            or ""
+        ).strip()
+        if provider_name != "cloudflare_temp_mail":
+            return mailbox
+
+        meta = dict(mailbox.get("meta") or {})
+        if str(meta.get("provider_jwt") or "").strip():
+            return mailbox
+
+        provider = self._get_provider(mailbox=mailbox)
+        resolve = getattr(provider, "resolve_address_credentials", None)
+        if not callable(resolve):
+            return mailbox
+
+        creds = resolve(email_addr)
+        if not creds or not str(creds.get("jwt") or "").strip():
+            return mailbox
+
+        record = mailbox.get("record") or temp_emails_repo.get_temp_email_by_address(email_addr)
+        if not record:
+            return mailbox
+
+        self._update_mailbox_provider_meta(
+            record,
+            jwt=str(creds.get("jwt") or "").strip(),
+            address_id=str(creds.get("address_id") or creds.get("provider_mailbox_id") or "").strip(),
+            provider_name=provider_name,
+        )
+        refreshed = temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor")
+        return refreshed or mailbox
+
     @staticmethod
     def _parse_historical_import_line(line: str) -> tuple[str, str]:
         parts = line.split("----", 1)
@@ -821,7 +876,13 @@ class TempMailService:
         return address_part, jwt
 
     @staticmethod
-    def _update_mailbox_jwt(record: dict[str, Any], jwt: str, *, provider_name: str) -> None:
+    def _update_mailbox_provider_meta(
+        record: dict[str, Any],
+        *,
+        jwt: str,
+        provider_name: str,
+        address_id: str = "",
+    ) -> None:
         from outlook_web.db import get_db
 
         email_addr = str(record.get("email") or "").strip()
@@ -830,7 +891,12 @@ class TempMailService:
         meta = dict(record.get("meta_json") or record.get("meta") or {})
         meta["provider_name"] = provider_name
         meta["provider_jwt"] = jwt
-        serialized_meta = temp_emails_repo.serialize_temp_email_meta(meta, source=str(record.get("source") or TEMP_MAIL_SOURCE))
+        if address_id:
+            meta["provider_mailbox_id"] = address_id
+        serialized_meta = temp_emails_repo.serialize_temp_email_meta(
+            meta,
+            source=str(record.get("source") or TEMP_MAIL_SOURCE),
+        )
         db = get_db()
         db.execute(
             """
@@ -841,6 +907,10 @@ class TempMailService:
             (serialized_meta, email_addr),
         )
         db.commit()
+
+    @staticmethod
+    def _update_mailbox_jwt(record: dict[str, Any], jwt: str, *, provider_name: str) -> None:
+        TempMailService._update_mailbox_provider_meta(record, jwt=jwt, provider_name=provider_name)
 
 
 _service: TempMailService | None = None
