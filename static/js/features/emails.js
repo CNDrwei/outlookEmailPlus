@@ -3,6 +3,11 @@
         // 模块内变量：存储上次获取邮件失败的错误详情
         let lastFetchErrorDetails = {};
 
+        function normalizeMailboxFetchMethod(value) {
+            const normalized = String(value || '').trim().toLowerCase();
+            return normalized.startsWith('imap') ? 'imap' : 'graph';
+        }
+
         function resolveEmailSortTimestamp(email) {
             const rawDate = email && (email.receivedDateTime || email.date || email.created_at || email.received_at);
             const parsed = Date.parse(String(rawDate || ''));
@@ -36,13 +41,13 @@
                 currentEmails = sortEmailsByNewestFirst(cache.emails || []);
                 hasMoreEmails = cache.has_more;
                 currentSkip = cache.skip;
-                currentMethod = cache.method || 'graph';
+                currentMethod = normalizeMailboxFetchMethod(cache.method);
 
                 cache.emails = currentEmails;
 
                 // 恢复 UI
                 const methodTag = document.getElementById('methodTag');
-                methodTag.textContent = currentMethod;
+                methodTag.textContent = cache.method_label || cache.method || currentMethod;
                 methodTag.style.display = 'inline';
                 document.getElementById('emailCount').textContent = `(${currentEmails.length})`;
 
@@ -62,6 +67,7 @@
             // 重置分页状态
             currentSkip = 0;
             hasMoreEmails = true;
+            currentMethod = 'graph';
 
             container.innerHTML = `<div class="loading-overlay"><span class="spinner"></span> ${translateAppTextLocal('获取中…')}</div>`;
 
@@ -75,7 +81,7 @@
                 if (data.success) {
                     const sortedEmails = sortEmailsByNewestFirst(data.emails || []);
                     currentEmails = sortedEmails;
-                    currentMethod = data.method === 'Graph API' ? 'graph' : 'imap';
+                    currentMethod = normalizeMailboxFetchMethod(data.method);
                     hasMoreEmails = data.has_more;
                     if (typeof syncAccountSummaryToAccountCache === 'function' && data.account_summary) {
                         syncAccountSummaryToAccountCache(email, data.account_summary);
@@ -90,7 +96,8 @@
                         emails: currentEmails,
                         has_more: hasMoreEmails,
                         skip: currentSkip,
-                        method: currentMethod
+                        method: currentMethod,
+                        method_label: data.method || currentMethod
                     };
 
                     // 显示使用的方法和邮件数量
@@ -1017,6 +1024,7 @@
                     // 清除当前缓存并强制刷新
                     const cacheKey = `${currentAccount}_${currentFolder}`;
                     delete emailListCache[cacheKey];
+                    currentMethod = 'graph';
                     loadEmails(currentAccount, true);
                 }
             } else {
@@ -1079,4 +1087,3 @@
                 window.location.href = '/logout';
             }
         }
-

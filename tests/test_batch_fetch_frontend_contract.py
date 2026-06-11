@@ -132,10 +132,27 @@ class BatchFetchFrontendContractTests(unittest.TestCase):
 
         self.assertIn("async function loadEmails(email, forceRefresh = false)", emails_js)
         self.assertIn("const cacheKey = `${email}_${currentFolder}`;", emails_js)
+        self.assertIn("function normalizeMailboxFetchMethod(value)", emails_js)
+        self.assertIn("currentMethod = 'graph';", emails_js)
         self.assertIn(
             "`/api/emails/${encodeURIComponent(email)}?method=${currentMethod}&folder=${currentFolder}&skip=0&top=20`",
             emails_js,
         )
+
+    def test_frontend_cached_method_labels_do_not_override_graph_first_refresh(self):
+        """手动获取邮件始终从 Graph 发起；缓存展示标签不污染后续详情请求 method。"""
+        client = self.app.test_client()
+        emails_js = self._get_text(client, "/static/js/features/emails.js")
+        accounts_js = self._get_text(client, "/static/js/features/accounts.js")
+        main_js = self._get_main_js()
+
+        self.assertIn("return normalized.startsWith('imap') ? 'imap' : 'graph';", emails_js)
+        self.assertIn("currentMethod = normalizeMailboxFetchMethod(cache.method);", emails_js)
+        self.assertIn("method: currentMethod", emails_js)
+        self.assertIn("method_label: data.method || currentMethod", emails_js)
+        self.assertIn("currentMethod = 'graph';\n                    loadEmails(currentAccount, true);", emails_js)
+        self.assertIn("normalizeMailboxFetchMethod(cache.method)", accounts_js)
+        self.assertIn("method_label: methodLabel", main_js)
 
     def test_selected_account_ids_semantics_unchanged(self):
         """TDD D-04：selectedAccountIds 仍是跨分组的批量选择主状态。"""

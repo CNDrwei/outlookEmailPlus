@@ -291,6 +291,43 @@ def api_clear_temp_email_messages(email_addr: str) -> Any:
 
 
 @login_required
+def api_import_cf_temp_emails() -> Any:
+    """从 CF Worker 批量导入已有邮箱"""
+    try:
+        result = temp_mail_service.import_cf_mailboxes()
+        imported = result.get("imported", 0)
+        skipped = result.get("skipped", 0)
+        total = result.get("total_remote", 0)
+        errors = result.get("errors", [])
+
+        message_parts = []
+        if imported > 0:
+            message_parts.append(f"成功导入 {imported} 个邮箱")
+        if skipped > 0:
+            message_parts.append(f"跳过 {skipped} 个（已存在）")
+        if errors:
+            message_parts.append(f"{len(errors)} 个失败")
+
+        return jsonify({
+            "success": True,
+            "imported": imported,
+            "skipped": skipped,
+            "total_remote": total,
+            "errors": errors,
+            "message": "；".join(message_parts) if message_parts else "未发现可导入的邮箱",
+            "message_en": f"Imported {imported}, skipped {skipped}, {len(errors)} errors",
+        })
+    except TempMailError as exc:
+        logger.error(f"CF 临时邮箱导入失败: {exc.message}")
+        return build_error_response(
+            exc.code,
+            exc.message,
+            status=exc.status,
+            message_en="Failed to import CF temp mailboxes",
+        )
+
+
+@login_required
 def api_refresh_temp_email_messages(email_addr: str) -> Any:
     """刷新临时邮箱的邮件"""
     try:

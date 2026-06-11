@@ -37,6 +37,80 @@ class WebGraphAuthFallbackTests(unittest.TestCase):
             )
             db.commit()
 
+    @patch("outlook_web.controllers.emails.accounts_repo.touch_last_refresh_at", return_value=True)
+    @patch(
+        "outlook_web.controllers.emails.compact_summary_service.update_summary_from_message_list",
+        return_value={"latest_email_folder": "inbox"},
+    )
+    @patch("outlook_web.services.imap.get_emails_imap_with_server")
+    @patch("outlook_web.services.graph.get_emails_graph")
+    def test_get_emails_graph_success_short_circuits_imap_fallback(
+        self,
+        mock_graph_list,
+        mock_imap_list,
+        _mock_update_summary,
+        _mock_touch_last_refresh_at,
+    ):
+        email_addr = "graph_first_success@example.com"
+        self._insert_outlook_account(email_addr)
+
+        mock_graph_list.return_value = {
+            "success": True,
+            "emails": [
+                {
+                    "id": "graph-msg-1",
+                    "subject": "via graph",
+                    "from": {"emailAddress": {"address": "noreply@example.com"}},
+                    "receivedDateTime": "2030-01-01T00:00:00Z",
+                    "isRead": False,
+                    "hasAttachments": False,
+                    "bodyPreview": "hello",
+                }
+            ],
+        }
+
+        client = self.app.test_client()
+        self._login(client)
+        resp = client.get(f"/api/emails/{email_addr}?method=imap&folder=inbox&skip=0&top=20")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("method"), "Graph API")
+        self.assertEqual(data.get("emails", [])[0].get("id"), "graph-msg-1")
+        mock_imap_list.assert_not_called()
+
+    @patch("outlook_web.services.imap.get_email_detail_imap")
+    @patch("outlook_web.services.graph.get_email_detail_graph")
+    def test_get_email_detail_accepts_graph_api_method_label(
+        self,
+        mock_graph_detail,
+        mock_imap_detail,
+    ):
+        email_addr = "graph_detail_label@example.com"
+        self._insert_outlook_account(email_addr)
+
+        mock_graph_detail.return_value = {
+            "id": "graph-msg-1",
+            "subject": "via graph detail",
+            "from": {"emailAddress": {"address": "sender@example.com"}},
+            "toRecipients": [],
+            "ccRecipients": [],
+            "receivedDateTime": "2030-01-01T00:00:00Z",
+            "body": {"content": "hello", "contentType": "text"},
+        }
+
+        client = self.app.test_client()
+        self._login(client)
+        resp = client.get(f"/api/email/{email_addr}/graph-msg-1?method=Graph%20API&folder=inbox")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("email", {}).get("id"), "graph-msg-1")
+        mock_graph_detail.assert_called_once()
+        mock_imap_detail.assert_not_called()
+
     @patch("outlook_web.services.imap.get_emails_imap_with_server")
     @patch("outlook_web.services.graph.get_emails_graph")
     def test_get_emails_graph_401_still_fallback_to_imap(

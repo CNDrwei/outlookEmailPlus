@@ -94,6 +94,84 @@ def _update_account_summary_from_verification(account: Dict[str, Any], data: Dic
     )
 
 
+def _normalize_mailbox_method(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized.startswith("imap"):
+        return "imap"
+    return "graph"
+
+
+def _get_account_proxy_url(account: Dict[str, Any]) -> str:
+    if not account.get("group_id"):
+        return ""
+    group = groups_repo.get_group_by_id(account["group_id"])
+    if not group:
+        return ""
+    return group.get("proxy_url", "") or ""
+
+
+def _format_graph_email_summary(email_item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": email_item.get("id"),
+        "subject": email_item.get("subject", "无主题"),
+        "from": email_item.get("from", {}).get("emailAddress", {}).get("address", "未知"),
+        "date": email_item.get("receivedDateTime", ""),
+        "is_read": email_item.get("isRead", False),
+        "has_attachments": email_item.get("hasAttachments", False),
+        "body_preview": email_item.get("bodyPreview", ""),
+    }
+
+
+def _build_graph_email_list_payload(
+    account: Dict[str, Any],
+    graph_result: Dict[str, Any],
+    *,
+    folder: str,
+    top: int,
+) -> Dict[str, Any]:
+    emails = graph_result.get("emails", []) or []
+    account_summary = compact_summary_service.update_summary_from_message_list(
+        int(account["id"]),
+        emails,
+        folder=folder,
+    )
+
+    new_rt = graph_result.get("new_refresh_token")
+    if new_rt:
+        _persist_refresh_token(account, str(new_rt or ""))
+    accounts_repo.touch_last_refresh_at(int(account["id"]))
+
+    formatted = [_format_graph_email_summary(e) for e in emails]
+    return {
+        "success": True,
+        "emails": formatted,
+        "method": "Graph API",
+        "has_more": len(formatted) >= top,
+        "account_summary": account_summary,
+    }
+
+
+def _fetch_outlook_emails_graph_first(
+    account: Dict[str, Any],
+    *,
+    folder: str,
+    skip: int,
+    top: int,
+    proxy_url: str,
+) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    graph_result = graph_service.get_emails_graph(
+        account.get("client_id") or "",
+        account.get("refresh_token") or "",
+        folder,
+        skip,
+        top,
+        proxy_url,
+    )
+    if graph_result.get("success"):
+        return _build_graph_email_list_payload(account, graph_result, folder=folder, top=top), graph_result
+    return None, graph_result
+
+
 # ==================== 邮件 API ====================
 
 
@@ -296,48 +374,15 @@ def api_batch_get_emails() -> Any:
                     any_folder_success = any_folder_success or bool(result.get("success"))
                     continue
 
-                graph_result = graph_service.get_emails_graph(
-                    account.get("client_id") or "",
-                    account.get("refresh_token") or "",
-                    folder,
-                    skip,
-                    top,
-                    proxy_url,
+                graph_payload, graph_result = _fetch_outlook_emails_graph_first(
+                    account,
+                    folder=folder,
+                    skip=skip,
+                    top=top,
+                    proxy_url=proxy_url,
                 )
-                if graph_result.get("success"):
-                    emails = graph_result.get("emails", [])
-                    account_summary = compact_summary_service.update_summary_from_message_list(
-                        int(account["id"]),
-                        emails,
-                        folder=folder,
-                    )
-                    # Token Rotation + 刷新时间
-                    new_rt = graph_result.get("new_refresh_token")
-                    if new_rt:
-                        _persist_refresh_token(account, str(new_rt or ""))
-                    accounts_repo.touch_last_refresh_at(int(account["id"]))
-
-                    formatted = []
-                    for e in emails:
-                        formatted.append(
-                            {
-                                "id": e.get("id"),
-                                "subject": e.get("subject", "无主题"),
-                                "from": e.get("from", {}).get("emailAddress", {}).get("address", "未知"),
-                                "date": e.get("receivedDateTime", ""),
-                                "is_read": e.get("isRead", False),
-                                "has_attachments": e.get("hasAttachments", False),
-                                "body_preview": e.get("bodyPreview", ""),
-                            }
-                        )
-
-                    per_folder_results[folder] = {
-                        "success": True,
-                        "emails": formatted,
-                        "method": "Graph API",
-                        "has_more": len(formatted) >= top,
-                        "account_summary": account_summary,
-                    }
+                if graph_payload:
+                    per_folder_results[folder] = graph_payload
                     any_folder_success = True
                     continue
 
@@ -501,67 +546,33 @@ def api_get_emails(email_addr: str) -> Any:
         )
         return jsonify(result)
 
-    # 获取分组代理设置
-    proxy_url = ""
-    if account.get("group_id"):
-        group = groups_repo.get_group_by_id(account["group_id"])
-        if group:
-            proxy_url = group.get("proxy_url", "") or ""
+    proxy_url = _get_account_proxy_url(account)
 
     # 收集所有错误信息
     all_errors = {}
 
     # 1. 尝试 Graph API
     _t_graph = time.monotonic()
-    graph_result = graph_service.get_emails_graph(account["client_id"], account["refresh_token"], folder, skip, top, proxy_url)
+    graph_payload, graph_result = _fetch_outlook_emails_graph_first(
+        account,
+        folder=folder,
+        skip=skip,
+        top=top,
+        proxy_url=proxy_url,
+    )
     _LOGGER.debug(
         "[PERF] get_emails | email=%s | graph_api | %dms | success=%s",
         email_addr,
         (time.monotonic() - _t_graph) * 1000,
         graph_result.get("success"),
     )
-    if graph_result.get("success"):
-        emails = graph_result.get("emails", [])
-        account_summary = compact_summary_service.update_summary_from_message_list(
-            int(account["id"]),
-            emails,
-            folder=folder,
-        )
-        # 更新刷新时间，同时保存 Microsoft 可能返回的新 refresh_token（Token Rotation）
-        new_rt = graph_result.get("new_refresh_token")
-        if new_rt:
-            _persist_refresh_token(account, str(new_rt or ""))
-        accounts_repo.touch_last_refresh_at(int(account["id"]))
-
-        # 格式化 Graph API 返回的数据
-        formatted = []
-        for e in emails:
-            formatted.append(
-                {
-                    "id": e.get("id"),
-                    "subject": e.get("subject", "无主题"),
-                    "from": e.get("from", {}).get("emailAddress", {}).get("address", "未知"),
-                    "date": e.get("receivedDateTime", ""),
-                    "is_read": e.get("isRead", False),
-                    "has_attachments": e.get("hasAttachments", False),
-                    "body_preview": e.get("bodyPreview", ""),
-                }
-            )
-
+    if graph_payload:
         _LOGGER.debug(
             "[PERF] get_emails | email=%s | 总耗时=%dms | method=graph_api",
             email_addr,
             (time.monotonic() - _t0) * 1000,
         )
-        return jsonify(
-            {
-                "success": True,
-                "emails": formatted,
-                "method": "Graph API",
-                "has_more": len(formatted) >= top,
-                "account_summary": account_summary,
-            }
-        )
+        return jsonify(graph_payload)
     else:
         graph_error = graph_result.get("error")
         all_errors["graph"] = graph_error
@@ -816,15 +827,10 @@ def api_get_email_detail(email_addr: str, message_id: str) -> Any:
         _LOGGER.warning("email_detail_imap_failed email=%s message_id=%s", email_addr, message_id)
         return _build_response_from_error_payload(error_payload)
 
-    method = request.args.get("method", "graph")
+    method = _normalize_mailbox_method(request.args.get("method", "graph"))
 
     if method == "graph":
-        # 获取分组代理设置
-        proxy_url = ""
-        if account.get("group_id"):
-            group = groups_repo.get_group_by_id(account["group_id"])
-            if group:
-                proxy_url = group.get("proxy_url", "") or ""
+        proxy_url = _get_account_proxy_url(account)
 
         _t_graph = time.monotonic()
         detail = graph_service.get_email_detail_graph(account["client_id"], account["refresh_token"], message_id, proxy_url)

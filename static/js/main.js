@@ -27,6 +27,11 @@
         let currentEmailDetail = null;
         let isTrustedMode = false;
 
+        function normalizeMailboxFetchMethod(value) {
+            const normalized = String(value || '').trim().toLowerCase();
+            return normalized.startsWith('imap') ? 'imap' : 'graph';
+        }
+
         // 轮询相关（Phase 2: 变量保留用于设置读写，实际轮询由统一引擎处理）
         let maxPollingCount = 5;
         let pollingInterval = 10;
@@ -1070,13 +1075,13 @@
                     : (cache.emails || []);
                 hasMoreEmails = cache.has_more;
                 currentSkip = cache.skip;
-                currentMethod = cache.method || 'graph';
+                currentMethod = normalizeMailboxFetchMethod(cache.method);
 
                 cache.emails = currentEmails;
 
                 // 恢复 UI
                 const methodTag = document.getElementById('methodTag');
-                methodTag.textContent = currentMethod;
+                methodTag.textContent = cache.method_label || cache.method || currentMethod;
                 methodTag.style.display = 'inline';
                 document.getElementById('emailCount').textContent = `(${currentEmails.length})`;
 
@@ -4578,13 +4583,15 @@ ${details}
 
         function cacheBatchFetchedFolder(email, folder, data) {
             const cacheKey = `${email}_${folder}`;
+            const methodLabel = data.method || 'Graph API';
             emailListCache[cacheKey] = {
                 emails: (typeof sortEmailsByNewestFirst === 'function')
                     ? sortEmailsByNewestFirst(data.emails || [])
                     : (data.emails || []),
                 has_more: data.has_more || false,
                 skip: 0,
-                method: data.method || 'Graph API',
+                method: normalizeMailboxFetchMethod(methodLabel),
+                method_label: methodLabel,
             };
         }
 
@@ -4596,8 +4603,14 @@ ${details}
                 : (data.emails || []);
 
             currentEmails = sortedEmails;
+            currentMethod = normalizeMailboxFetchMethod(data.method);
             const emailCountEl = document.getElementById('emailCount');
             if (emailCountEl) emailCountEl.textContent = `(${currentEmails.length})`;
+            const methodTag = document.getElementById('methodTag');
+            if (methodTag) {
+                methodTag.textContent = data.method || currentMethod;
+                methodTag.style.display = 'inline';
+            }
             renderEmailList(currentEmails);
         }
 

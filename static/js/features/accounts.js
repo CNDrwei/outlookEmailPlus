@@ -41,12 +41,14 @@
                     : (cache.emails || []);
                 hasMoreEmails = cache.has_more;
                 currentSkip = cache.skip;
-                currentMethod = cache.method || 'graph';
+                currentMethod = typeof normalizeMailboxFetchMethod === 'function'
+                    ? normalizeMailboxFetchMethod(cache.method)
+                    : 'graph';
 
                 cache.emails = currentEmails;
 
                 const methodTag = document.getElementById('methodTag');
-                methodTag.textContent = currentMethod;
+                methodTag.textContent = cache.method_label || cache.method || currentMethod;
                 methodTag.style.display = 'inline';
                 document.getElementById('emailCount').textContent = `(${currentEmails.length})`;
 
@@ -902,4 +904,3 @@
                 showToast(translateAppTextLocal('导出失败'), 'error');
             }
         }
-
