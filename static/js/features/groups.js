@@ -914,14 +914,37 @@
                     headers: { 'Content-Type': 'application/json' }
                 });
                 const data = await response.json();
-                const formatted = data?.data?.formatted || data?.data?.code || '';
 
-                if (data.success && formatted) {
-                    await copyToClipboard(formatted);
+                if (!data.success) {
+                    const errorMsg = window.resolveApiErrorMessage
+                        ? window.resolveApiErrorMessage(data.error || data, '获取短信验证码失败', 'Failed to fetch SMS verification code')
+                        : (data.error?.message || data.message || '获取短信验证码失败');
+                    showToast(errorMsg, 'error');
+                    buttonElement.innerHTML = '❌';
+                    buttonElement.style.opacity = '1';
+                    return false;
+                }
+
+                const payload = data.data || {};
+                const code = String(payload.code || '').trim();
+                const content = String(payload.content || payload.raw || '').trim();
+                const codeExtracted = payload.code_extracted === true || !!code;
+
+                if (!content && !code) {
+                    showToast(translateAppTextLocal('短信接口暂无内容'), 'error');
+                    buttonElement.innerHTML = '❌';
+                    buttonElement.style.opacity = '1';
+                    return false;
+                }
+
+                showSmsCodeResultModal({ code, content, codeExtracted });
+
+                if (codeExtracted && code) {
+                    await copyToClipboard(code);
                     showToast(
                         getUiLanguage() === 'en'
-                            ? `Copied SMS code: ${formatted}`
-                            : `已复制短信验证码: ${formatted}`,
+                            ? `Copied SMS code: ${code}`
+                            : `已复制短信验证码: ${code}`,
                         'success'
                     );
                     buttonElement.innerHTML = '✅';
@@ -929,13 +952,15 @@
                     return true;
                 }
 
-                const errorMsg = window.resolveApiErrorMessage
-                    ? window.resolveApiErrorMessage(data.error || data, '获取短信验证码失败', 'Failed to fetch SMS verification code')
-                    : (data.error?.message || data.message || '获取短信验证码失败');
-                showToast(errorMsg, 'error');
-                buttonElement.innerHTML = '❌';
+                showToast(
+                    getUiLanguage() === 'en'
+                        ? 'Could not detect a 6-digit code. Please copy from the SMS content.'
+                        : translateAppTextLocal('未能识别6位验证码，请从短信内容中手动复制'),
+                    'warning'
+                );
+                buttonElement.innerHTML = '⚠️';
                 buttonElement.style.opacity = '1';
-                return false;
+                return true;
             } catch (error) {
                 console.error('获取短信验证码失败:', error);
                 showToast(translateAppTextLocal('网络错误，请重试'), 'error');
@@ -949,6 +974,49 @@
                     buttonElement.style.cursor = 'pointer';
                 }, 1500);
             }
+        }
+
+        function showSmsCodeResultModal({ code = '', content = '', codeExtracted = false } = {}) {
+            const modal = document.getElementById('smsCodeResultModal');
+            const extractedBlock = document.getElementById('smsCodeExtractedBlock');
+            const extractedValue = document.getElementById('smsCodeExtractedValue');
+            const extractHint = document.getElementById('smsCodeExtractHint');
+            const contentValue = document.getElementById('smsCodeContentValue');
+            if (!modal || !contentValue) {
+                return;
+            }
+
+            const normalizedCode = String(code || '').trim();
+            const normalizedContent = String(content || '').trim();
+            const hasExtractedCode = codeExtracted && normalizedCode;
+
+            if (extractedBlock && extractedValue) {
+                extractedBlock.style.display = hasExtractedCode ? '' : 'none';
+                extractedValue.value = hasExtractedCode ? normalizedCode : '';
+            }
+            if (extractHint) {
+                extractHint.style.display = hasExtractedCode ? 'none' : '';
+            }
+            contentValue.value = normalizedContent;
+            modal.classList.add('show');
+        }
+
+        function hideSmsCodeResultModal() {
+            const modal = document.getElementById('smsCodeResultModal');
+            if (modal) {
+                modal.classList.remove('show');
+            }
+        }
+
+        async function copySmsCodeField(fieldId) {
+            const field = document.getElementById(fieldId);
+            const text = field ? String(field.value || '').trim() : '';
+            if (!text) {
+                showToast(translateAppTextLocal('暂无可复制内容'), 'error');
+                return;
+            }
+            await copyToClipboard(text);
+            showToast(translateAppTextLocal('已复制'), 'success');
         }
 
         async function copyVerificationInfo(email, buttonElement, options = {}) {

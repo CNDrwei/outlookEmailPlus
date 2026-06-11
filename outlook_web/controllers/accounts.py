@@ -954,16 +954,19 @@ def api_fetch_account_sms_code(account_id: int) -> Any:
         )
 
     code = (result.get("code") or "").strip()
-    formatted = (result.get("formatted") or code or "").strip()
+    content = (result.get("content") or result.get("raw") or "").strip()
+    code_extracted = bool(result.get("code_extracted"))
     return jsonify(
         {
             "success": True,
-            "message": "获取成功" if code else "已获取接口响应，但未识别出验证码",
-            "message_en": "Fetched successfully" if code else "Fetched response but no code was detected",
+            "message": "获取成功" if code_extracted else "已获取短信内容，但未识别出6位验证码",
+            "message_en": "Fetched successfully" if code_extracted else "Fetched SMS content but no 6-digit code was detected",
             "data": {
                 "code": code,
-                "formatted": formatted,
+                "content": content,
+                "formatted": code,
                 "raw": result.get("raw") or "",
+                "code_extracted": code_extracted,
             },
         }
     )

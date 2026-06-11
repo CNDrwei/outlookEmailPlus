@@ -595,6 +595,36 @@
         </div>
     </div>
 
+    <!-- 短信验证码结果模态框 -->
+    <div class="modal" id="smsCodeResultModal" onclick="if(event.target === this) hideSmsCodeResultModal()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📱 短信验证码</h3>
+                <button class="modal-close" onclick="hideSmsCodeResultModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="smsCodeExtractedBlock" class="form-group" style="display:none;">
+                    <label class="form-label">验证码</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="text" class="form-input" id="smsCodeExtractedValue" readonly>
+                        <button class="btn btn-primary" type="button" onclick="copySmsCodeField('smsCodeExtractedValue')">复制验证码</button>
+                    </div>
+                </div>
+                <div id="smsCodeExtractHint" class="form-hint" style="display:none;color:var(--clr-warning);margin-bottom:12px;">
+                    未能自动识别 6 位数字验证码，请从下方短信内容中手动复制。
+                </div>
+                <div class="form-group">
+                    <label class="form-label">短信内容</label>
+                    <textarea class="form-textarea" id="smsCodeContentValue" rows="6" readonly></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideSmsCodeResultModal()">关闭</button>
+                <button class="btn btn-primary" type="button" onclick="copySmsCodeField('smsCodeContentValue')">复制短信内容</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 刷新失败提示模态框 -->
     <div class="modal" id="refreshErrorModal" onclick="if(event.target === this) hideRefreshErrorModal()">
         <div class="modal-content">
