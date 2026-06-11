@@ -677,6 +677,171 @@ class TempMailService:
                 trace_id=None,
             )
 
+    def import_historical_mailboxes(
+        self,
+        *,
+        domain: str,
+        address_text: str,
+        provider_name: str = "cloudflare_temp_mail",
+        max_lines: int = 500,
+        max_error_details: int = 50,
+    ) -> dict[str, Any]:
+        """批量导入历史临时邮箱（本地落库，不要求上游探测成功）。"""
+        normalized_domain = str(domain or "").strip().lower()
+        if not normalized_domain:
+            raise TempMailError("INVALID_PARAM", "请指定域名", status=400)
+
+        provider_key = str(provider_name or "cloudflare_temp_mail").strip() or "cloudflare_temp_mail"
+        try:
+            self._validate_prefix_and_domain(None, normalized_domain, provider_name=provider_key)
+        except TempMailError:
+            # 允许手动输入未同步到 settings 的域名，便于导入历史邮箱。
+            pass
+
+        imported = 0
+        skipped = 0
+        failed = 0
+        errors: list[dict[str, Any]] = []
+        errors_total = 0
+        processed = 0
+
+        for line_no, raw in enumerate(str(address_text or "").splitlines(), start=1):
+            line = (raw or "").strip()
+            if not line or line.startswith("#"):
+                continue
+            if processed >= max_lines:
+                failed += 1
+                errors_total += 1
+                if len(errors) < max_error_details:
+                    errors.append(
+                        {
+                            "line": line_no,
+                            "error": f"单次导入上限 {max_lines} 个",
+                        }
+                    )
+                continue
+
+            processed += 1
+            address_part, jwt = self._parse_historical_import_line(line)
+            prefix: str | None = None
+            email_domain = normalized_domain
+
+            if "@" in address_part:
+                email_addr = address_part.strip().lower()
+                prefix, email_domain = email_addr.rsplit("@", 1)
+                if email_domain != normalized_domain:
+                    failed += 1
+                    errors_total += 1
+                    if len(errors) < max_error_details:
+                        errors.append(
+                            {
+                                "line": line_no,
+                                "email": email_addr,
+                                "error": f"邮箱域名与指定域名不一致：{email_domain} != {normalized_domain}",
+                            }
+                        )
+                    continue
+            else:
+                prefix = address_part.strip().lower()
+                try:
+                    prefix, email_domain = self._validate_prefix_and_domain(
+                        prefix,
+                        normalized_domain,
+                        provider_name=provider_key,
+                    )
+                except TempMailError as exc:
+                    failed += 1
+                    errors_total += 1
+                    if len(errors) < max_error_details:
+                        errors.append({"line": line_no, "email": prefix, "error": exc.message})
+                    continue
+                email_addr = f"{prefix}@{email_domain or normalized_domain}"
+
+            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email_addr):
+                failed += 1
+                errors_total += 1
+                if len(errors) < max_error_details:
+                    errors.append({"line": line_no, "email": email_addr, "error": "邮箱格式不正确"})
+                continue
+
+            existing = temp_emails_repo.get_temp_email_by_address(email_addr)
+            if existing:
+                if jwt:
+                    self._update_mailbox_jwt(existing, jwt, provider_name=provider_key)
+                skipped += 1
+                continue
+
+            meta: dict[str, Any] = {
+                "provider_name": provider_key,
+                "imported_as_historical": True,
+            }
+            if jwt:
+                meta["provider_jwt"] = jwt
+
+            try:
+                self._create_or_load_mailbox_record(
+                    email_addr=email_addr,
+                    mailbox_type="user",
+                    visible_in_ui=True,
+                    source=TEMP_MAIL_SOURCE,
+                    prefix=prefix,
+                    domain=email_domain or normalized_domain,
+                    meta=meta,
+                    provider_name=provider_key,
+                    allow_existing=True,
+                )
+                imported += 1
+            except TempMailError as exc:
+                failed += 1
+                errors_total += 1
+                if len(errors) < max_error_details:
+                    errors.append({"line": line_no, "email": email_addr, "error": exc.message})
+            except Exception:
+                failed += 1
+                errors_total += 1
+                if len(errors) < max_error_details:
+                    errors.append({"line": line_no, "email": email_addr, "error": "写入失败"})
+
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "failed": failed,
+            "processed": processed,
+            "errors_total": errors_total,
+            "errors_returned": len(errors),
+            "errors_truncated": errors_total > len(errors),
+            "errors": errors,
+        }
+
+    @staticmethod
+    def _parse_historical_import_line(line: str) -> tuple[str, str]:
+        parts = line.split("----", 1)
+        address_part = (parts[0] or "").strip()
+        jwt = (parts[1] or "").strip() if len(parts) > 1 else ""
+        return address_part, jwt
+
+    @staticmethod
+    def _update_mailbox_jwt(record: dict[str, Any], jwt: str, *, provider_name: str) -> None:
+        from outlook_web.db import get_db
+
+        email_addr = str(record.get("email") or "").strip()
+        if not email_addr or not jwt:
+            return
+        meta = dict(record.get("meta_json") or record.get("meta") or {})
+        meta["provider_name"] = provider_name
+        meta["provider_jwt"] = jwt
+        serialized_meta = temp_emails_repo.serialize_temp_email_meta(meta, source=str(record.get("source") or TEMP_MAIL_SOURCE))
+        db = get_db()
+        db.execute(
+            """
+            UPDATE temp_emails
+            SET meta_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE email = ?
+            """,
+            (serialized_meta, email_addr),
+        )
+        db.commit()
+
 
 _service: TempMailService | None = None
 

@@ -165,6 +165,10 @@
             const providerSelect = document.getElementById('tempEmailProviderSelect');
             if (providerSelect) {
                 loadTempEmailOptions(forceRefresh, providerSelect.value);
+                const importBtn = document.getElementById('importCfTempEmailBtn');
+                if (importBtn) {
+                    importBtn.style.display = providerSelect.value === 'cloudflare_temp_mail' ? '' : 'none';
+                }
             }
 
             if (!forceRefresh && accountsCache['temp']) {
@@ -254,6 +258,91 @@
         // 生成临时邮箱
         function onTempEmailProviderChange(selectedProvider) {
             loadTempEmailOptions(false, selectedProvider);
+            const importBtn = document.getElementById('importCfTempEmailBtn');
+            if (importBtn) {
+                const isCf = String(selectedProvider || '').trim() === 'cloudflare_temp_mail';
+                importBtn.style.display = isCf ? '' : 'none';
+            }
+        }
+
+        function showImportCfTempEmailModal() {
+            const providerSelect = document.getElementById('tempEmailProviderSelect');
+            const providerName = providerSelect ? providerSelect.value.trim() : 'cloudflare_temp_mail';
+            if (providerName !== 'cloudflare_temp_mail') {
+                showToast(translateAppTextLocal('请先选择 Cloudflare Temp Mail Provider'), 'warning');
+                return;
+            }
+
+            const domainInput = document.getElementById('importCfTempEmailDomain');
+            const domainSelect = document.getElementById('tempEmailDomainSelect');
+            const textarea = document.getElementById('importCfTempEmailInput');
+            const cacheKey = getTempEmailOptionsCacheKey(providerName);
+            const options = tempEmailOptionsCache.get(cacheKey);
+            const domains = Array.isArray(options?.domains) ? options.domains.filter(item => item && item.enabled !== false) : [];
+
+            if (domainInput) {
+                const selectedDomain = domainSelect && !domainSelect.disabled ? (domainSelect.value || '').trim() : '';
+                const defaultDomain = domains.find(item => item.is_default)?.name || domains[0]?.name || '';
+                domainInput.value = selectedDomain || defaultDomain || domainInput.value || '';
+            }
+            if (textarea) {
+                textarea.value = '';
+            }
+            document.getElementById('importCfTempEmailModal').classList.add('show');
+        }
+
+        function hideImportCfTempEmailModal() {
+            document.getElementById('importCfTempEmailModal').classList.remove('show');
+        }
+
+        async function importCfTempEmails() {
+            const domain = (document.getElementById('importCfTempEmailDomain')?.value || '').trim();
+            const addressText = (document.getElementById('importCfTempEmailInput')?.value || '').trim();
+            const providerSelect = document.getElementById('tempEmailProviderSelect');
+            const providerName = providerSelect ? (providerSelect.value || 'cloudflare_temp_mail').trim() : 'cloudflare_temp_mail';
+
+            if (!domain) {
+                showToast(translateAppTextLocal('请指定域名'), 'error');
+                return;
+            }
+            if (!addressText) {
+                showToast(translateAppTextLocal('请输入要导入的邮箱'), 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/temp-emails/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        domain,
+                        address_string: addressText,
+                        provider_name: providerName
+                    })
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(pickApiMessage(data, data.message, 'Import completed'), 'success');
+                    hideImportCfTempEmailModal();
+                    delete accountsCache['temp'];
+                    loadTempEmails(true);
+                    return;
+                }
+
+                let message = pickApiMessage(data, data.message || '导入失败', data.message_en || 'Import failed');
+                const errors = Array.isArray(data.errors) ? data.errors : [];
+                if (errors.length > 0) {
+                    const first = errors[0] || {};
+                    const detail = first.error || first.message || '';
+                    if (detail) {
+                        message += first.line ? `\n第 ${first.line} 行：${detail}` : `\n${detail}`;
+                    }
+                }
+                showToast(message, 'error', data.error || data);
+            } catch (error) {
+                showToast(translateAppTextLocal('导入失败'), 'error');
+            }
         }
 
         async function generateTempEmail() {

@@ -291,40 +291,74 @@ def api_clear_temp_email_messages(email_addr: str) -> Any:
 
 
 @login_required
-def api_import_cf_temp_emails() -> Any:
-    """从 CF Worker 批量导入已有邮箱"""
+def api_import_temp_emails() -> Any:
+    """批量导入 CF 历史临时邮箱（指定域名 + 每行一个前缀/邮箱）。"""
+    data = request.json or {}
+    domain = str(data.get("domain") or "").strip()
+    address_text = str(data.get("address_string") or data.get("addresses") or "").strip()
+    provider_name = str(data.get("provider_name") or "cloudflare_temp_mail").strip() or "cloudflare_temp_mail"
+
+    if not address_text:
+        return build_error_response(
+            "TEMP_EMAIL_IMPORT_INPUT_REQUIRED",
+            "请输入要导入的邮箱",
+            message_en="Please enter mailboxes to import",
+            status=400,
+        )
+
     try:
-        result = temp_mail_service.import_cf_mailboxes()
-        imported = result.get("imported", 0)
-        skipped = result.get("skipped", 0)
-        total = result.get("total_remote", 0)
-        errors = result.get("errors", [])
-
-        message_parts = []
-        if imported > 0:
-            message_parts.append(f"成功导入 {imported} 个邮箱")
-        if skipped > 0:
-            message_parts.append(f"跳过 {skipped} 个（已存在）")
-        if errors:
-            message_parts.append(f"{len(errors)} 个失败")
-
-        return jsonify({
-            "success": True,
-            "imported": imported,
-            "skipped": skipped,
-            "total_remote": total,
-            "errors": errors,
-            "message": "；".join(message_parts) if message_parts else "未发现可导入的邮箱",
-            "message_en": f"Imported {imported}, skipped {skipped}, {len(errors)} errors",
-        })
+        result = temp_mail_service.import_historical_mailboxes(
+            domain=domain,
+            address_text=address_text,
+            provider_name=provider_name,
+        )
     except TempMailError as exc:
-        logger.error(f"CF 临时邮箱导入失败: {exc.message}")
         return build_error_response(
             exc.code,
             exc.message,
             status=exc.status,
-            message_en="Failed to import CF temp mailboxes",
+            message_en="Failed to import temp mailboxes",
         )
+
+    imported = int(result.get("imported") or 0)
+    skipped = int(result.get("skipped") or 0)
+    failed = int(result.get("failed") or 0)
+    errors = result.get("errors") or []
+
+    message_parts = []
+    if imported > 0:
+        message_parts.append(f"成功导入 {imported} 个")
+    if skipped > 0:
+        message_parts.append(f"跳过 {skipped} 个（已存在）")
+    if failed > 0:
+        message_parts.append(f"失败 {failed} 个")
+
+    if imported > 0:
+        log_audit(
+            "import",
+            "temp_email",
+            None,
+            f"批量导入 CF 历史临时邮箱：domain={domain}，imported={imported}，skipped={skipped}，failed={failed}",
+        )
+
+    return jsonify(
+        {
+            "success": imported > 0 or (skipped > 0 and failed == 0),
+            "imported": imported,
+            "skipped": skipped,
+            "failed": failed,
+            "summary": result,
+            "errors": errors,
+            "message": "；".join(message_parts) if message_parts else "未发现可导入的邮箱",
+            "message_en": f"Imported {imported}, skipped {skipped}, failed {failed}",
+        }
+    )
+
+
+@login_required
+def api_import_cf_temp_emails() -> Any:
+    """兼容旧入口：转调批量历史导入（需传 domain + address_string）。"""
+    return api_import_temp_emails()
 
 
 @login_required
