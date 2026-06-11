@@ -494,7 +494,7 @@ class TempMailService:
         mailbox = self._get_mailbox_descriptor(email_or_mailbox)
         email_addr = str(mailbox.get("email") or "")
         if sync_remote:
-            mailbox = self._ensure_cf_mailbox_credentials(mailbox)
+            mailbox = self._ensure_cf_mailbox_credentials(mailbox, required=True)
             # BUG-03: cache-only 场景（sync_remote=False）不得依赖 provider 初始化。
             provider = self._get_provider(mailbox=mailbox)
             try:
@@ -829,7 +829,12 @@ class TempMailService:
             "errors": errors,
         }
 
-    def _ensure_cf_mailbox_credentials(self, mailbox: dict[str, Any]) -> dict[str, Any]:
+    def _ensure_cf_mailbox_credentials(
+        self,
+        mailbox: dict[str, Any],
+        *,
+        required: bool = False,
+    ) -> dict[str, Any]:
         email_addr = str(mailbox.get("email") or "").strip()
         if not email_addr:
             return mailbox
@@ -847,12 +852,46 @@ class TempMailService:
             return mailbox
 
         provider = self._get_provider(mailbox=mailbox)
-        resolve = getattr(provider, "resolve_address_credentials", None)
-        if not callable(resolve):
-            return mailbox
+        resolve_detail = getattr(provider, "resolve_address_credentials_detail", None)
+        creds: dict[str, Any] | None = None
+        sync_error: TempMailError | None = None
 
-        creds = resolve(email_addr)
+        if callable(resolve_detail):
+            detail = resolve_detail(email_addr)
+            if detail.get("success"):
+                creds = detail.get("credentials") or {}
+            else:
+                sync_error = TempMailError(
+                    str(detail.get("error_code") or "TEMP_EMAIL_CREDENTIALS_UNAVAILABLE"),
+                    str(
+                        detail.get("error_message")
+                        or f"无法从 CF Worker 同步邮箱 {email_addr} 的 JWT"
+                    ),
+                    status=502,
+                    data={"email": email_addr, **(detail.get("data") or {})},
+                )
+        else:
+            resolve = getattr(provider, "resolve_address_credentials", None)
+            if callable(resolve):
+                creds = resolve(email_addr)
+            if not creds or not str((creds or {}).get("jwt") or "").strip():
+                sync_error = TempMailError(
+                    "TEMP_EMAIL_CREDENTIALS_UNAVAILABLE",
+                    f"无法从 CF Worker 同步邮箱 {email_addr} 的 JWT，请确认地址已在 Worker 创建且 Admin Key 已配置",
+                    status=502,
+                    data={"email": email_addr},
+                )
+
         if not creds or not str(creds.get("jwt") or "").strip():
+            if required and sync_error is not None:
+                raise sync_error
+            if required:
+                raise TempMailError(
+                    "TEMP_EMAIL_CREDENTIALS_UNAVAILABLE",
+                    f"无法从 CF Worker 同步邮箱 {email_addr} 的 JWT",
+                    status=502,
+                    data={"email": email_addr},
+                )
             return mailbox
 
         record = mailbox.get("record") or temp_emails_repo.get_temp_email_by_address(email_addr)

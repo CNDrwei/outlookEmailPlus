@@ -282,57 +282,167 @@ class CloudflareTempMailProvider(TempMailProviderBase):
             "provider_debug": {"bridge": "cloudflare_worker"},
         }
 
-    def resolve_address_credentials(self, email_addr: str) -> dict[str, Any] | None:
-        """通过 CF Admin API 为已存在的历史邮箱补全 JWT 与 address_id。"""
-        normalized_email = str(email_addr or "").strip().lower()
-        if not normalized_email:
+    @staticmethod
+    def _pick_address_record(candidates: list[dict[str, Any]], normalized_email: str) -> dict[str, Any] | None:
+        if not candidates:
             return None
 
+        local_part, _, domain = normalized_email.partition("@")
+
+        def _record_name(item: dict[str, Any]) -> str:
+            return str(item.get("name") or item.get("address") or "").strip().lower()
+
+        for item in candidates:
+            if _record_name(item) == normalized_email:
+                return item
+
+        if domain and local_part:
+            domain_matches: list[dict[str, Any]] = []
+            for item in candidates:
+                name = _record_name(item)
+                if not name or "@" not in name:
+                    continue
+                item_local, item_domain = name.rsplit("@", 1)
+                if item_domain != domain:
+                    continue
+                if (
+                    item_local == local_part
+                    or item_local.endswith(local_part)
+                    or local_part.endswith(item_local)
+                    or local_part in item_local
+                ):
+                    domain_matches.append(item)
+            if len(domain_matches) == 1:
+                return domain_matches[0]
+            for item in domain_matches:
+                item_local = _record_name(item).split("@", 1)[0]
+                if item_local.endswith(local_part):
+                    return item
+
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def _fetch_admin_address_candidates(self, query: str, *, limit: int = 100) -> tuple[list[dict[str, Any]], str | None]:
         base_url = self._base_url()
         if not base_url or not self._admin_key():
-            return None
+            return [], "TEMP_MAIL_PROVIDER_NOT_CONFIGURED"
 
         try:
             resp = requests.get(
                 f"{base_url}/admin/address",
-                params={"query": normalized_email, "limit": 20, "offset": 0},
+                params={"query": query, "limit": limit, "offset": 0},
                 headers=self._admin_headers(),
                 timeout=_CF_REQUEST_TIMEOUT,
             )
         except requests.RequestException as exc:
-            logger.warning("[cf_provider] resolve credentials list failed email=%s err=%s", normalized_email, exc)
-            return None
+            logger.warning("[cf_provider] resolve credentials list failed query=%s err=%s", query, exc)
+            return [], "UPSTREAM_SERVER_ERROR"
 
         if not resp.ok:
             logger.warning(
-                "[cf_provider] resolve credentials list HTTP %s email=%s",
+                "[cf_provider] resolve credentials list HTTP %s query=%s",
                 resp.status_code,
-                normalized_email,
+                query,
             )
-            return None
+            if resp.status_code in (401, 403):
+                return [], "UNAUTHORIZED"
+            return [], "UPSTREAM_BAD_PAYLOAD"
 
         try:
             payload = resp.json()
         except Exception:
-            return None
+            return [], "UPSTREAM_BAD_PAYLOAD"
 
         candidates = payload.get("results") or payload.get("data") or payload.get("addresses") or []
         if not isinstance(candidates, list):
-            return None
+            return [], "UPSTREAM_BAD_PAYLOAD"
+        return [item for item in candidates if isinstance(item, dict)], None
 
-        matched = None
-        for item in candidates:
-            if not isinstance(item, dict):
+    def resolve_address_credentials_detail(self, email_addr: str) -> dict[str, Any]:
+        """通过 CF Admin API 为已存在的历史邮箱补全 JWT 与 address_id。"""
+        normalized_email = str(email_addr or "").strip().lower()
+        if not normalized_email:
+            return {
+                "success": False,
+                "error_code": "INVALID_PARAM",
+                "error_message": "邮箱地址不能为空",
+            }
+
+        base_url = self._base_url()
+        if not base_url:
+            return {
+                "success": False,
+                "error_code": "TEMP_MAIL_PROVIDER_NOT_CONFIGURED",
+                "error_message": "CF Worker base_url 未配置",
+            }
+        if not self._admin_key():
+            return {
+                "success": False,
+                "error_code": "TEMP_MAIL_PROVIDER_NOT_CONFIGURED",
+                "error_message": "CF Worker admin key 未配置",
+            }
+
+        queries: list[str] = [normalized_email]
+        if "@" in normalized_email:
+            local_part = normalized_email.split("@", 1)[0].strip()
+            if local_part and local_part not in queries:
+                queries.append(local_part)
+
+        matched: dict[str, Any] | None = None
+        last_error_code = "TEMP_EMAIL_NOT_FOUND"
+        seen_ids: set[str] = set()
+        aggregated: list[dict[str, Any]] = []
+
+        for query in queries:
+            candidates, error_code = self._fetch_admin_address_candidates(query)
+            if error_code:
+                last_error_code = error_code
+                if error_code in ("UNAUTHORIZED", "TEMP_MAIL_PROVIDER_NOT_CONFIGURED", "UPSTREAM_SERVER_ERROR"):
+                    break
                 continue
-            if str(item.get("name") or "").strip().lower() == normalized_email:
-                matched = item
+            for item in candidates:
+                item_id = str(item.get("id") or "").strip()
+                if item_id and item_id in seen_ids:
+                    continue
+                if item_id:
+                    seen_ids.add(item_id)
+                aggregated.append(item)
+            matched = self._pick_address_record(aggregated, normalized_email)
+            if matched:
                 break
+
         if not matched:
-            return None
+            if last_error_code == "UNAUTHORIZED":
+                return {
+                    "success": False,
+                    "error_code": "UNAUTHORIZED",
+                    "error_message": "CF Worker Admin Key 无效或未授权，无法同步邮箱 JWT",
+                    "data": {"email": normalized_email},
+                }
+            if last_error_code == "TEMP_MAIL_PROVIDER_NOT_CONFIGURED":
+                return {
+                    "success": False,
+                    "error_code": "TEMP_MAIL_PROVIDER_NOT_CONFIGURED",
+                    "error_message": "CF Worker 未配置，无法同步邮箱 JWT",
+                    "data": {"email": normalized_email},
+                }
+            return {
+                "success": False,
+                "error_code": "TEMP_EMAIL_NOT_FOUND",
+                "error_message": f"CF Worker 上未找到邮箱 {normalized_email}，请确认该地址已在 Worker 创建",
+                "data": {"email": normalized_email},
+            }
 
         address_id = str(matched.get("id") or "").strip()
+        matched_name = str(matched.get("name") or matched.get("address") or "").strip()
         if not address_id:
-            return None
+            return {
+                "success": False,
+                "error_code": "UPSTREAM_BAD_PAYLOAD",
+                "error_message": "CF Worker 返回的地址记录缺少 id",
+                "data": {"email": normalized_email, "matched_name": matched_name},
+            }
 
         try:
             jwt_resp = requests.get(
@@ -342,7 +452,12 @@ class CloudflareTempMailProvider(TempMailProviderBase):
             )
         except requests.RequestException as exc:
             logger.warning("[cf_provider] resolve credentials jwt failed id=%s err=%s", address_id, exc)
-            return None
+            return {
+                "success": False,
+                "error_code": "UPSTREAM_SERVER_ERROR",
+                "error_message": f"CF Worker 获取 JWT 失败: {exc}",
+                "data": {"email": normalized_email, "address_id": address_id},
+            }
 
         if not jwt_resp.ok:
             logger.warning(
@@ -350,22 +465,56 @@ class CloudflareTempMailProvider(TempMailProviderBase):
                 jwt_resp.status_code,
                 address_id,
             )
-            return None
+            if jwt_resp.status_code == 404:
+                message = (
+                    "CF Worker 不支持 /admin/show_password，请升级 Worker 版本，"
+                    "或在导入时使用 邮箱----JWT 格式"
+                )
+            elif jwt_resp.status_code in (401, 403):
+                message = "CF Worker Admin Key 无效或未授权，无法获取邮箱 JWT"
+            else:
+                message = f"CF Worker 获取 JWT 失败 HTTP {jwt_resp.status_code}"
+            return {
+                "success": False,
+                "error_code": _map_cf_http_error(jwt_resp.status_code, jwt_resp.text),
+                "error_message": message,
+                "data": {"email": normalized_email, "address_id": address_id, "status_code": jwt_resp.status_code},
+            }
 
         try:
             jwt_payload = jwt_resp.json()
         except Exception:
-            return None
+            return {
+                "success": False,
+                "error_code": "UPSTREAM_BAD_PAYLOAD",
+                "error_message": "CF Worker JWT 响应不是有效 JSON",
+                "data": {"email": normalized_email, "address_id": address_id},
+            }
 
         jwt = str(jwt_payload.get("jwt") or "").strip()
         if not jwt:
-            return None
+            return {
+                "success": False,
+                "error_code": "UPSTREAM_BAD_PAYLOAD",
+                "error_message": "CF Worker 未返回 jwt",
+                "data": {"email": normalized_email, "address_id": address_id},
+            }
 
         return {
-            "jwt": jwt,
-            "address_id": address_id,
-            "provider_mailbox_id": address_id,
+            "success": True,
+            "credentials": {
+                "jwt": jwt,
+                "address_id": address_id,
+                "provider_mailbox_id": address_id,
+                "matched_name": matched_name,
+            },
         }
+
+    def resolve_address_credentials(self, email_addr: str) -> dict[str, Any] | None:
+        detail = self.resolve_address_credentials_detail(email_addr)
+        if detail.get("success"):
+            return detail.get("credentials")
+        return None
 
     def _raise_http_error(self, resp: requests.Response, *, operation: str) -> None:
         code = _map_cf_http_error(resp.status_code, resp.text)

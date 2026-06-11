@@ -650,6 +650,25 @@ class CloudflareTempMailProviderTests(unittest.TestCase):
 
         self.assertIsNone(creds)
 
+    def test_resolve_address_credentials_matches_prefixed_address_name(self):
+        with self.app.app_context():
+            provider = self._make_provider()
+            list_resp = MagicMock()
+            list_resp.ok = True
+            list_resp.json.return_value = {
+                "results": [{"id": "addr-prefix", "name": "temp-hist@cf-mail.example.com"}]
+            }
+            jwt_resp = MagicMock()
+            jwt_resp.ok = True
+            jwt_resp.json.return_value = {"jwt": "resolved-prefix-jwt"}
+
+            with patch("requests.get", side_effect=[list_resp, jwt_resp]):
+                creds = provider.resolve_address_credentials("hist@cf-mail.example.com")
+
+        self.assertIsNotNone(creds)
+        self.assertEqual(creds["jwt"], "resolved-prefix-jwt")
+        self.assertEqual(creds["address_id"], "addr-prefix")
+
     # ------------------------------------------------------------------
     # _normalize_cf_message 字段映射
     # ------------------------------------------------------------------

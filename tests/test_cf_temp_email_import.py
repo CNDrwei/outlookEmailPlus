@@ -80,8 +80,11 @@ class CfTempEmailImportTests(unittest.TestCase):
         from unittest.mock import patch
 
         with patch(
-            "outlook_web.services.temp_mail_provider_cf.CloudflareTempMailProvider.resolve_address_credentials",
-            return_value={"jwt": "imported-jwt", "address_id": "addr-import-1"},
+            "outlook_web.services.temp_mail_provider_cf.CloudflareTempMailProvider.resolve_address_credentials_detail",
+            return_value={
+                "success": True,
+                "credentials": {"jwt": "imported-jwt", "address_id": "addr-import-1"},
+            },
         ):
             resp = client.post(
                 "/api/temp-emails/import",
@@ -124,15 +127,20 @@ class CfTempEmailImportTests(unittest.TestCase):
         from unittest.mock import patch
 
         with patch(
-            "outlook_web.services.temp_mail_provider_cf.CloudflareTempMailProvider.resolve_address_credentials",
-            return_value=None,
+            "outlook_web.services.temp_mail_provider_cf.CloudflareTempMailProvider.resolve_address_credentials_detail",
+            return_value={
+                "success": False,
+                "error_code": "TEMP_EMAIL_NOT_FOUND",
+                "error_message": "CF Worker 上未找到邮箱",
+                "data": {"email": email_addr},
+            },
         ):
             msg_resp = client.get(f"/api/temp-emails/{email_addr}/messages")
 
         self.assertEqual(msg_resp.status_code, 502)
         payload = msg_resp.get_json()
         self.assertFalse(payload.get("success"))
-        self.assertEqual(payload.get("code"), "TEMP_EMAIL_UPSTREAM_READ_FAILED")
+        self.assertIn(payload.get("code"), {"TEMP_EMAIL_NOT_FOUND", "TEMP_EMAIL_CREDENTIALS_UNAVAILABLE"})
 
 
 if __name__ == "__main__":
