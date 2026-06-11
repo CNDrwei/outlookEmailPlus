@@ -490,11 +490,20 @@ class TempMailService:
     def get_task_mailbox(self, task_token: str, *, view: str = "record") -> dict[str, Any] | None:
         return temp_emails_repo.get_temp_email_by_task_token(task_token, view=view)
 
+    def _prepare_mailbox_for_provider_read(
+        self,
+        mailbox: dict[str, Any],
+        *,
+        required: bool = True,
+    ) -> dict[str, Any]:
+        """取信前确保 mailbox 已具备 Provider 凭据（导入与系统创建走同一套逻辑）。"""
+        return self._ensure_cf_mailbox_credentials(mailbox, required=required)
+
     def list_messages(self, email_or_mailbox: str | dict[str, Any], *, sync_remote: bool = True) -> list[dict[str, Any]]:
         mailbox = self._get_mailbox_descriptor(email_or_mailbox)
         email_addr = str(mailbox.get("email") or "")
         if sync_remote:
-            mailbox = self._ensure_cf_mailbox_credentials(mailbox, required=True)
+            mailbox = self._prepare_mailbox_for_provider_read(mailbox, required=True)
             # BUG-03: cache-only 场景（sync_remote=False）不得依赖 provider 初始化。
             provider = self._get_provider(mailbox=mailbox)
             try:
@@ -524,6 +533,7 @@ class TempMailService:
         email_addr = str(mailbox.get("email") or "")
         row = temp_emails_repo.get_temp_email_message_by_id(message_id, email_addr=email_addr)
         if refresh_if_missing and row is None:
+            mailbox = self._prepare_mailbox_for_provider_read(mailbox, required=True)
             # BUG-03: cache-only 场景（refresh_if_missing=False）不得依赖 provider 初始化。
             provider = self._get_provider(mailbox=mailbox)
             try:
@@ -550,6 +560,7 @@ class TempMailService:
     def refresh_message_detail(self, email_or_mailbox: str | dict[str, Any], message_id: str) -> dict[str, Any]:
         mailbox = self._get_mailbox_descriptor(email_or_mailbox)
         email_addr = str(mailbox.get("email") or "")
+        mailbox = self._prepare_mailbox_for_provider_read(mailbox, required=True)
         provider = self._get_provider(mailbox=mailbox)
         try:
             api_row = provider.get_message_detail(mailbox, message_id)
@@ -694,7 +705,7 @@ class TempMailService:
         max_lines: int = 500,
         max_error_details: int = 50,
     ) -> dict[str, Any]:
-        """批量导入历史临时邮箱（本地落库，不要求上游探测成功）。"""
+        """批量导入 CF 临时邮箱：落库后通过 Admin API 补全 JWT，取信逻辑与系统创建一致。"""
         normalized_domain = str(domain or "").strip().lower()
         if not normalized_domain:
             raise TempMailError("INVALID_PARAM", "请指定域名", status=400)
@@ -775,23 +786,32 @@ class TempMailService:
             existing = temp_emails_repo.get_temp_email_by_address(email_addr)
             if existing:
                 if jwt:
-                    self._update_mailbox_provider_meta(existing, jwt=jwt, provider_name=provider_key)
+                    provider = self._get_provider(provider_name=provider_key)
+                    self._persist_provider_credentials(
+                        existing,
+                        provider=provider,
+                        jwt=jwt,
+                        provider_name=provider_key,
+                    )
                 elif provider_key == "cloudflare_temp_mail":
-                    self._ensure_cf_mailbox_credentials(
-                        temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor") or existing
+                    self._prepare_mailbox_for_provider_read(
+                        temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor") or existing,
+                        required=False,
                     )
                 skipped += 1
                 continue
 
-            meta: dict[str, Any] = {
-                "provider_name": provider_key,
-                "imported_as_historical": True,
-            }
+            meta: dict[str, Any] = {"provider_name": provider_key}
             if jwt:
-                meta["provider_jwt"] = jwt
+                provider = self._get_provider(provider_name=provider_key)
+                build_meta = getattr(provider, "_build_meta", None)
+                if callable(build_meta):
+                    meta = build_meta(jwt=jwt)
+                else:
+                    meta["provider_jwt"] = jwt
 
             try:
-                mailbox = self._create_or_load_mailbox_record(
+                self._create_or_load_mailbox_record(
                     email_addr=email_addr,
                     mailbox_type="user",
                     visible_in_ui=True,
@@ -805,7 +825,7 @@ class TempMailService:
                 if provider_key == "cloudflare_temp_mail" and not jwt:
                     descriptor = temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor")
                     if descriptor:
-                        self._ensure_cf_mailbox_credentials(descriptor)
+                        self._prepare_mailbox_for_provider_read(descriptor, required=False)
                 imported += 1
             except TempMailError as exc:
                 failed += 1
@@ -898,14 +918,55 @@ class TempMailService:
         if not record:
             return mailbox
 
-        self._update_mailbox_provider_meta(
+        self._persist_provider_credentials(
             record,
+            provider=provider,
             jwt=str(creds.get("jwt") or "").strip(),
             address_id=str(creds.get("address_id") or creds.get("provider_mailbox_id") or "").strip(),
             provider_name=provider_name,
         )
         refreshed = temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor")
         return refreshed or mailbox
+
+    @staticmethod
+    def _persist_provider_credentials(
+        record: dict[str, Any],
+        *,
+        provider: Any,
+        jwt: str,
+        provider_name: str,
+        address_id: str = "",
+    ) -> None:
+        from outlook_web.db import get_db
+
+        email_addr = str(record.get("email") or "").strip()
+        if not email_addr or not jwt:
+            return
+
+        build_meta = getattr(provider, "_build_meta", None)
+        if callable(build_meta):
+            meta = build_meta(jwt=jwt, address_id=address_id)
+        else:
+            meta = {
+                "provider_name": provider_name,
+                "provider_jwt": jwt,
+                "provider_mailbox_id": address_id,
+            }
+
+        serialized_meta = temp_emails_repo.serialize_temp_email_meta(
+            meta,
+            source=str(record.get("source") or TEMP_MAIL_SOURCE),
+        )
+        db = get_db()
+        db.execute(
+            """
+            UPDATE temp_emails
+            SET meta_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE email = ?
+            """,
+            (serialized_meta, email_addr),
+        )
+        db.commit()
 
     @staticmethod
     def _parse_historical_import_line(line: str) -> tuple[str, str]:
@@ -922,30 +983,16 @@ class TempMailService:
         provider_name: str,
         address_id: str = "",
     ) -> None:
-        from outlook_web.db import get_db
+        from outlook_web.services.temp_mail_provider_factory import get_temp_mail_provider
 
-        email_addr = str(record.get("email") or "").strip()
-        if not email_addr or not jwt:
-            return
-        meta = dict(record.get("meta_json") or record.get("meta") or {})
-        meta["provider_name"] = provider_name
-        meta["provider_jwt"] = jwt
-        if address_id:
-            meta["provider_mailbox_id"] = address_id
-        serialized_meta = temp_emails_repo.serialize_temp_email_meta(
-            meta,
-            source=str(record.get("source") or TEMP_MAIL_SOURCE),
+        provider = get_temp_mail_provider(provider_name)
+        TempMailService._persist_provider_credentials(
+            record,
+            provider=provider,
+            jwt=jwt,
+            provider_name=provider_name,
+            address_id=address_id,
         )
-        db = get_db()
-        db.execute(
-            """
-            UPDATE temp_emails
-            SET meta_json = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE email = ?
-            """,
-            (serialized_meta, email_addr),
-        )
-        db.commit()
 
     @staticmethod
     def _update_mailbox_jwt(record: dict[str, Any], jwt: str, *, provider_name: str) -> None:
