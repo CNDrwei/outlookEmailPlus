@@ -47,6 +47,16 @@ def get_temp_mail_api_key_default() -> str:
     return get_gptmail_api_key_default()
 
 
+def get_cf_worker_base_url_default() -> str:
+    """Cloudflare Temp Email Worker 部署地址（环境变量层）。"""
+    return _getenv("CF_WORKER_BASE_URL", "") or ""
+
+
+def get_cf_worker_admin_key_default() -> str:
+    """Cloudflare Worker ADMIN_PASSWORDS 密码值（环境变量层）。"""
+    return _getenv("CF_WORKER_ADMIN_KEY", "") or ""
+
+
 def env_true(key: str, default: bool) -> bool:
     """
     与旧实现保持一致：只有值为 'true'（忽略大小写）才视为 True；其它值均为 False。

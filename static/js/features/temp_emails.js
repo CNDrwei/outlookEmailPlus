@@ -1,5 +1,7 @@
         // ==================== 临时邮箱相关 ====================
 
+        let selectedTempEmailAddresses = new Set();
+
         let tempEmailOptionsCache = new Map();
         let tempEmailOptionsState = new Map();
         let tempEmailOptionsRequestSeq = 0;
@@ -201,12 +203,118 @@
             }
         }
 
+        function updateTempEmailBatchActionBar() {
+            const bar = document.getElementById('tempEmailBatchActionBar');
+            const countSpan = document.getElementById('tempEmailSelectedCount');
+            if (!bar || !countSpan) return;
+
+            if (selectedTempEmailAddresses.size > 0) {
+                bar.style.display = 'flex';
+                countSpan.textContent = typeof formatSelectedItemsLabel === 'function'
+                    ? formatSelectedItemsLabel(selectedTempEmailAddresses.size)
+                    : `已选 ${selectedTempEmailAddresses.size} 项`;
+            } else {
+                bar.style.display = 'none';
+            }
+        }
+
+        function updateTempEmailSelectAllCheckbox() {
+            const selectAll = document.getElementById('tempEmailSelectAll');
+            if (!selectAll) return;
+
+            const checkboxes = document.querySelectorAll('.temp-email-select-checkbox');
+            if (!checkboxes.length) {
+                selectAll.checked = false;
+                selectAll.indeterminate = false;
+                return;
+            }
+
+            const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+            selectAll.checked = checkedCount > 0 && checkedCount === checkboxes.length;
+            selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+        }
+
+        function toggleTempEmailSelection(email, checked) {
+            const normalized = String(email || '').trim();
+            if (!normalized) return;
+            if (checked) {
+                selectedTempEmailAddresses.add(normalized);
+            } else {
+                selectedTempEmailAddresses.delete(normalized);
+            }
+            updateTempEmailBatchActionBar();
+            updateTempEmailSelectAllCheckbox();
+        }
+
+        function toggleSelectAllTempEmails(checked) {
+            const checkboxes = document.querySelectorAll('.temp-email-select-checkbox');
+            checkboxes.forEach((checkbox) => {
+                checkbox.checked = !!checked;
+                toggleTempEmailSelection(checkbox.value, !!checked);
+            });
+            updateTempEmailSelectAllCheckbox();
+        }
+
+        function clearTempEmailSelection() {
+            selectedTempEmailAddresses.clear();
+            document.querySelectorAll('.temp-email-select-checkbox').forEach((checkbox) => {
+                checkbox.checked = false;
+            });
+            updateTempEmailBatchActionBar();
+            updateTempEmailSelectAllCheckbox();
+        }
+
+        function resetTempEmailDetailIfDeleted(emailSet) {
+            if (!currentAccount || !emailSet.has(currentAccount)) return;
+
+            currentAccount = null;
+            currentEmails = [];
+            currentEmailDetail = null;
+            isTrustedMode = false;
+
+            const currentAccountBar = document.getElementById('currentAccountBar');
+            if (currentAccountBar) currentAccountBar.style.display = 'none';
+
+            const emptyMailboxHTML = `
+                <div class="empty-state">
+                    <span class="empty-icon">📬</span><p>请从左侧选择一个邮箱账号</p>
+                </div>
+            `;
+            const emailList = document.getElementById('emailList');
+            if (emailList) emailList.innerHTML = emptyMailboxHTML;
+
+            const tempMessageList = document.getElementById('tempEmailMessageList');
+            if (tempMessageList) {
+                tempMessageList.innerHTML = `
+                    <div class="empty-state">
+                        <span class="empty-icon">📬</span>
+                        <p>选择一个临时邮箱查看邮件</p>
+                    </div>
+                `;
+            }
+
+            const tempName = document.getElementById('tempEmailCurrentName');
+            if (tempName) tempName.textContent = translateAppTextLocal('选择一个临时邮箱');
+
+            const tempRefreshBtn = document.getElementById('tempEmailRefreshBtn');
+            if (tempRefreshBtn) tempRefreshBtn.style.display = 'none';
+
+            if (typeof resetEmailDetailState === 'function') {
+                resetEmailDetailState({ source: 'temp' });
+            }
+        }
+
         // 渲染临时邮箱列表
         function renderTempEmailList(emails) {
             const container = document.getElementById('accountList');
             const pageContainer = document.getElementById('tempEmailContainer');
+            const visibleEmails = new Set((emails || []).map(item => String(item.email || '').trim()).filter(Boolean));
+            selectedTempEmailAddresses = new Set(
+                Array.from(selectedTempEmailAddresses).filter(email => visibleEmails.has(email))
+            );
 
             if (emails.length === 0) {
+                clearTempEmailSelection();
                 const emptyAccountHTML = `
                     <div class="empty-state">
                         <span class="empty-icon">⚡</span>
@@ -230,10 +338,14 @@
             const cardHTML = emails.map((email, idx) => {
                 const initial = (email.email || '?')[0].toUpperCase();
                 const color = colors[idx % colors.length];
+                const isChecked = selectedTempEmailAddresses.has(email.email);
                 return `
                 <div class="account-card ${currentAccount === email.email ? 'active' : ''}"
                      onclick="selectTempEmail('${escapeJs(email.email)}')">
                     <div class="account-card-top">
+                        <input type="checkbox" class="account-select-checkbox temp-email-select-checkbox" value="${escapeHtml(email.email)}"
+                               ${isChecked ? 'checked' : ''}
+                               onclick="event.stopPropagation(); toggleTempEmailSelection('${escapeJs(email.email)}', this.checked)">
                         <div class="account-avatar" style="background:${color};">${initial}</div>
                         <div class="account-info">
                             <div class="account-email" onclick="event.stopPropagation(); copyEmail('${escapeJs(email.email)}')" style="cursor:pointer;" title="点击复制">${escapeHtml(email.email)}</div>
@@ -253,6 +365,8 @@
 
             if (container) container.innerHTML = cardHTML;
             if (pageContainer) pageContainer.innerHTML = cardHTML;
+            updateTempEmailBatchActionBar();
+            updateTempEmailSelectAllCheckbox();
         }
 
         // 生成临时邮箱
@@ -295,11 +409,24 @@
             document.getElementById('importCfTempEmailModal').classList.remove('show');
         }
 
+        function countCfTempEmailImportLines(addressText) {
+            return String(addressText || '')
+                .split('\n')
+                .filter((line) => {
+                    const trimmed = line.trim();
+                    return trimmed && !trimmed.startsWith('#');
+                }).length;
+        }
+
         async function importCfTempEmails() {
             const domain = (document.getElementById('importCfTempEmailDomain')?.value || '').trim();
             const addressText = (document.getElementById('importCfTempEmailInput')?.value || '').trim();
             const providerSelect = document.getElementById('tempEmailProviderSelect');
             const providerName = providerSelect ? (providerSelect.value || 'cloudflare_temp_mail').trim() : 'cloudflare_temp_mail';
+            const submitBtn = document.getElementById('importCfTempEmailSubmitBtn');
+            const cancelBtn = document.getElementById('importCfTempEmailCancelBtn');
+            const hintEl = document.getElementById('importCfTempEmailHint');
+            const defaultHint = '格式：每行一个前缀（推荐）或完整邮箱。未带 JWT 的地址会先快速落库，首次取信时再从 CF Worker 同步凭据；若已知 JWT 可用 `前缀----JWT` 格式。';
 
             if (!domain) {
                 showToast(translateAppTextLocal('请指定域名'), 'error');
@@ -308,6 +435,17 @@
             if (!addressText) {
                 showToast(translateAppTextLocal('请输入要导入的邮箱'), 'error');
                 return;
+            }
+
+            const lineCount = countCfTempEmailImportLines(addressText);
+            const originalSubmitText = submitBtn ? submitBtn.textContent : '';
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = translateAppTextLocal(`导入中… (${lineCount} 个)`);
+            }
+            if (cancelBtn) cancelBtn.disabled = true;
+            if (hintEl) {
+                hintEl.textContent = translateAppTextLocal(`正在导入 ${lineCount} 个邮箱，请稍候…`);
             }
 
             try {
@@ -342,6 +480,13 @@
                 showToast(message, 'error', data.error || data);
             } catch (error) {
                 showToast(translateAppTextLocal('导入失败'), 'error');
+            } finally {
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = originalSubmitText || translateAppTextLocal('导入');
+                }
+                if (cancelBtn) cancelBtn.disabled = false;
+                if (hintEl) hintEl.textContent = defaultHint;
             }
         }
 
@@ -511,39 +656,8 @@
                 if (data.success) {
                     showToast('临时邮箱已删除', 'success');
                     delete accountsCache['temp'];
-
-                    if (currentAccount === email) {
-                        currentAccount = null;
-                        currentEmails = [];
-                        currentEmailDetail = null;
-                        isTrustedMode = false;
-                        const currentAccountBar = document.getElementById('currentAccountBar');
-                        if (currentAccountBar) currentAccountBar.style.display = 'none';
-                        const emptyMailboxHTML = `
-                            <div class="empty-state">
-                                <span class="empty-icon">📬</span><p>请从左侧选择一个邮箱账号</p>
-                            </div>
-                        `;
-                        const emailList = document.getElementById('emailList');
-                        if (emailList) emailList.innerHTML = emptyMailboxHTML;
-                        const tempMessageList = document.getElementById('tempEmailMessageList');
-                        if (tempMessageList) {
-                            tempMessageList.innerHTML = `
-                                <div class="empty-state">
-                                    <span class="empty-icon">📬</span>
-                                    <p>选择一个临时邮箱查看邮件</p>
-                                </div>
-                            `;
-                        }
-                        const tempName = document.getElementById('tempEmailCurrentName');
-                        if (tempName) tempName.textContent = translateAppTextLocal('选择一个临时邮箱');
-                        const tempRefreshBtn = document.getElementById('tempEmailRefreshBtn');
-                        if (tempRefreshBtn) tempRefreshBtn.style.display = 'none';
-                        if (typeof resetEmailDetailState === 'function') {
-                            resetEmailDetailState({ source: 'temp' });
-                        }
-                    }
-
+                    selectedTempEmailAddresses.delete(email);
+                    resetTempEmailDetailIfDeleted(new Set([email]));
                     loadTempEmails(true);
                     // BUG-06: 同 generateTempEmail，不调用 loadGroups()，
                     // 避免 currentGroupId 为 null 时触发 selectGroup() 清空 currentAccount。
@@ -552,6 +666,74 @@
                 }
             } catch (error) {
                 showToast('删除失败', 'error');
+            }
+        }
+
+        function confirmBatchDeleteTempEmails() {
+            if (selectedTempEmailAddresses.size === 0) {
+                showToast(translateAppTextLocal('请先选择要删除的临时邮箱'), 'warning');
+                return;
+            }
+
+            const count = selectedTempEmailAddresses.size;
+            if (!confirm(`确定要删除选中的 ${count} 个临时邮箱吗？\n本地列表与缓存邮件将被删除；若邮箱已在 CF Worker 创建，也会尝试同步删除远端地址。`)) {
+                return;
+            }
+
+            batchDeleteTempEmails();
+        }
+
+        async function batchDeleteTempEmails() {
+            const emails = Array.from(selectedTempEmailAddresses);
+            const deleteBtn = document.getElementById('tempEmailBatchDeleteBtn');
+            const originalText = deleteBtn ? deleteBtn.textContent : '';
+
+            if (deleteBtn) {
+                deleteBtn.disabled = true;
+                deleteBtn.textContent = translateAppTextLocal(`删除中… (${emails.length})`);
+            }
+
+            try {
+                const response = await fetch('/api/temp-emails/batch-delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ emails })
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(pickApiMessage(data, data.message, 'Batch delete completed'), 'success');
+                    const deletedSet = new Set(emails);
+                    delete accountsCache['temp'];
+                    clearTempEmailSelection();
+                    resetTempEmailDetailIfDeleted(deletedSet);
+                    loadTempEmails(true);
+                    return;
+                }
+
+                let message = pickApiMessage(data, data.message || '批量删除失败', data.message_en || 'Batch delete failed');
+                const errors = Array.isArray(data.errors) ? data.errors : [];
+                if (errors.length > 0) {
+                    const first = errors[0] || {};
+                    const detail = first.error || first.message || '';
+                    if (detail) {
+                        message += first.email ? `\n${first.email}：${detail}` : `\n${detail}`;
+                    }
+                }
+                showToast(message, data.deleted_count > 0 ? 'warning' : 'error', data.error || data);
+
+                if ((data.deleted_count || 0) > 0) {
+                    delete accountsCache['temp'];
+                    clearTempEmailSelection();
+                    loadTempEmails(true);
+                }
+            } catch (error) {
+                showToast(translateAppTextLocal('批量删除失败'), 'error');
+            } finally {
+                if (deleteBtn) {
+                    deleteBtn.disabled = false;
+                    deleteBtn.textContent = originalText || translateAppTextLocal('删除');
+                }
             }
         }
 

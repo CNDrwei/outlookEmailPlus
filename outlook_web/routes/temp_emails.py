@@ -28,6 +28,11 @@ def create_blueprint(csrf_exempt=None) -> Blueprint:
             ["POST"],
         ),
         (
+            "/api/temp-emails/batch-delete",
+            temp_emails_controller.api_batch_delete_temp_emails,
+            ["POST"],
+        ),
+        (
             "/api/temp-emails/<path:email_addr>/extract-verification",
             temp_emails_controller.api_extract_temp_email_verification,
             ["GET"],

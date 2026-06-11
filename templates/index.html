@@ -359,7 +359,10 @@
                     <!-- Temp Email List Column -->
                     <div class="workspace-panel accounts-column" id="tempEmailPanel" style="width:300px;">
                         <div class="column-header">
-                            <span class="column-title">⚡ 临时邮箱</span>
+                            <div style="display:flex;align-items:center;gap:8px;">
+                                <input type="checkbox" id="tempEmailSelectAll" onchange="toggleSelectAllTempEmails(this.checked)" title="全选">
+                                <span class="column-title">⚡ 临时邮箱</span>
+                            </div>
                             <div style="display:flex;gap:6px;">
                                 <button class="btn btn-sm btn-secondary" id="importCfTempEmailBtn" onclick="showImportCfTempEmailModal()">导入</button>
                                 <button class="btn btn-sm btn-primary" onclick="generateTempEmail()">+ 创建</button>
@@ -383,6 +386,11 @@
                                 <p>暂无临时邮箱</p>
                                 <button class="btn btn-primary" onclick="generateTempEmail()">创建第一个临时邮箱</button>
                             </div>
+                        </div>
+                        <div id="tempEmailBatchActionBar" class="batch-action-bar" style="display:none;">
+                            <span id="tempEmailSelectedCount" style="font-size:0.78rem;color:var(--text-muted);">已选 0 项</span>
+                            <div style="flex:1;"></div>
+                            <button class="btn btn-sm btn-danger" id="tempEmailBatchDeleteBtn" onclick="confirmBatchDeleteTempEmails()">删除</button>
                         </div>
                     </div>
                     <!-- Temp Email Messages Column -->
@@ -589,7 +597,7 @@
                                         ☁ 从 CF Worker 同步域名
                                     </button>
                                     <div class="form-hint" id="cfWorkerSyncTime" style="margin-top: 0.4rem;">
-                                        自动读取 CF Worker 的域名配置，同步至下方域名字段。
+                                        点击同步时会先保存上方地址与密码，再读取 CF Worker 域名配置。
                                     </div>
                                 </div>
                                 <div class="form-group">

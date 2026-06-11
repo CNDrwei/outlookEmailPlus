@@ -149,14 +149,15 @@ def get_temp_mail_api_base_url() -> str:
 
 def get_cf_worker_base_url() -> str:
     """获取 Cloudflare Temp Email Worker 独立部署地址（与 GPTMail 设置完全隔离）。"""
-    return get_setting("cf_worker_base_url", "").strip()
+    value = get_setting("cf_worker_base_url", "").strip()
+    return value if value else config.get_cf_worker_base_url_default()
 
 
 def get_cf_worker_admin_key() -> str:
     """获取 Cloudflare Worker ADMIN_PASSWORDS 中的密码值（自动解密 enc: 格式）。"""
     value = get_setting("cf_worker_admin_key", "").strip()
     if not value:
-        return ""
+        return config.get_cf_worker_admin_key_default()
     try:
         return decrypt_data(value)
     except Exception:

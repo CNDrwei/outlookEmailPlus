@@ -2627,11 +2627,50 @@ ${details}
             }
         }
 
+        function collectCfWorkerSettingsPayload() {
+            const payload = {};
+            const cfWorkerBaseUrlEl = document.getElementById('settingsCfWorkerBaseUrl');
+            const cfWorkerAdminKeyEl = document.getElementById('settingsCfWorkerAdminKey');
+
+            if (cfWorkerBaseUrlEl) {
+                payload.cf_worker_base_url = cfWorkerBaseUrlEl.value.trim();
+            }
+            if (cfWorkerAdminKeyEl) {
+                const cfKey = cfWorkerAdminKeyEl.value.trim();
+                const cfKeyMasked = cfWorkerAdminKeyEl.dataset.maskedValue || '';
+                const cfKeyIsSet = cfWorkerAdminKeyEl.dataset.isSet === 'true';
+                if (!(cfKeyIsSet && cfKey && cfKey === cfKeyMasked) && cfKey) {
+                    payload.cf_worker_admin_key = cfKey;
+                }
+            }
+            return payload;
+        }
+
         async function syncCfWorkerDomains() {
             const btn = document.getElementById('btnSyncCfWorkerDomains');
             const hintEl = document.getElementById('cfWorkerSyncTime');
-            if (btn) { btn.disabled = true; btn.textContent = translateAppTextLocal('⏳ 同步中…'); }
+            const cfSettings = collectCfWorkerSettingsPayload();
+
+            if (!cfSettings.cf_worker_base_url) {
+                showToast(translateAppTextLocal('请先填写 CF Worker 部署地址'), 'error');
+                if (hintEl) { hintEl.textContent = '❌ 请先填写 CF Worker 部署地址'; }
+                return;
+            }
+
+            if (btn) { btn.disabled = true; btn.textContent = translateAppTextLocal('⏳ 保存并同步中…'); }
             try {
+                const saveResp = await fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cfSettings)
+                });
+                const saveData = await saveResp.json();
+                if (!saveResp.ok || !saveData.success) {
+                    handleApiError(saveData, translateAppTextLocal('保存 CF Worker 配置失败'));
+                    if (hintEl) { hintEl.textContent = '❌ 保存 CF Worker 配置失败，请重试'; }
+                    return;
+                }
+
                 const resp = await fetch('/api/settings/cf-worker-sync-domains', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }

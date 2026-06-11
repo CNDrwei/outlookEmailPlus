@@ -125,7 +125,8 @@ def api_generate_temp_email() -> Any:
 def api_delete_temp_email(email_addr: str) -> Any:
     """删除临时邮箱"""
     try:
-        temp_mail_service.delete_mailbox(email_addr)
+        local_only = _parse_bool_flag(request.args.get("local_only"), default=False)
+        temp_mail_service.delete_mailbox(email_addr, local_only=local_only)
         log_audit("delete", "temp_email", email_addr, "删除临时邮箱")
         return jsonify(
             {
@@ -141,6 +142,61 @@ def api_delete_temp_email(email_addr: str) -> Any:
             status=exc.status,
             message_en="Failed to delete temp mailbox",
         )
+
+
+@login_required
+def api_batch_delete_temp_emails() -> Any:
+    """批量删除临时邮箱。"""
+    data = request.get_json(silent=True) or {}
+    emails = data.get("emails") or data.get("email_addrs") or []
+    local_only = _parse_bool_flag(data.get("local_only"), default=False)
+
+    if not isinstance(emails, list):
+        return build_error_response(
+            "INVALID_PARAM",
+            "参数格式错误",
+            message_en="Invalid request parameters",
+            status=400,
+        )
+
+    try:
+        result = temp_mail_service.batch_delete_mailboxes(emails, local_only=local_only)
+    except TempMailError as exc:
+        return build_error_response(
+            exc.code,
+            exc.message,
+            status=exc.status,
+            message_en="Failed to delete temp mailboxes",
+        )
+
+    deleted = int(result.get("deleted") or 0)
+    failed = int(result.get("failed") or 0)
+    errors = result.get("errors") or []
+
+    message_parts = []
+    if deleted > 0:
+        message_parts.append(f"成功删除 {deleted} 个")
+    if failed > 0:
+        message_parts.append(f"失败 {failed} 个")
+
+    if deleted > 0:
+        log_audit(
+            "delete",
+            "temp_email",
+            None,
+            f"批量删除临时邮箱：deleted={deleted}，failed={failed}，local_only={local_only}",
+        )
+
+    return jsonify(
+        {
+            "success": deleted > 0,
+            "deleted_count": deleted,
+            "failed_count": failed,
+            "errors": errors,
+            "message": "；".join(message_parts) if message_parts else "未删除任何临时邮箱",
+            "message_en": f"Deleted {deleted}, failed {failed}",
+        }
+    )
 
 
 @login_required

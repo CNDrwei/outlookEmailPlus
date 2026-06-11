@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import time
@@ -284,10 +285,22 @@ class TempMailService:
             raise TempMailError("TEMP_EMAIL_NOT_FOUND", "临时邮箱不存在", status=404)
         return record
 
-    def delete_mailbox(self, email_or_mailbox: str | dict[str, Any]) -> bool:
+    def delete_mailbox(
+        self,
+        email_or_mailbox: str | dict[str, Any],
+        *,
+        local_only: bool = False,
+    ) -> bool:
         mailbox = self._get_mailbox_descriptor(email_or_mailbox)
-        capabilities = (mailbox.get("meta") or {}).get("provider_capabilities") or {}
-        if bool(capabilities.get("delete_mailbox")):
+        meta = mailbox.get("meta") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        capabilities = meta.get("provider_capabilities") or {}
+        address_id = str(meta.get("provider_mailbox_id") or "").strip()
+        if not local_only and bool(capabilities.get("delete_mailbox")) and address_id:
             provider = self._get_provider(mailbox=mailbox)
             if not provider.delete_mailbox(mailbox):
                 raise TempMailError("TEMP_EMAIL_DELETE_FAILED", "删除失败", status=502)
@@ -295,6 +308,57 @@ class TempMailService:
         if not temp_emails_repo.delete_temp_email(email_addr):
             raise TempMailError("TEMP_EMAIL_DELETE_FAILED", "删除失败", status=500)
         return True
+
+    def batch_delete_mailboxes(
+        self,
+        email_addrs: list[str],
+        *,
+        local_only: bool = False,
+        max_items: int = 500,
+    ) -> dict[str, Any]:
+        """批量删除临时邮箱；默认逐项删除，单条失败不影响其余条目。"""
+        normalized = [str(item or "").strip() for item in email_addrs if str(item or "").strip()]
+        if not normalized:
+            raise TempMailError("TEMP_EMAIL_ADDRESSES_REQUIRED", "请选择要删除的临时邮箱", status=400)
+
+        deleted = 0
+        failed = 0
+        errors: list[dict[str, Any]] = []
+        errors_total = 0
+
+        for index, email_addr in enumerate(normalized):
+            if index >= max_items:
+                failed += 1
+                errors_total += 1
+                if len(errors) < 50:
+                    errors.append(
+                        {
+                            "email": email_addr,
+                            "error": f"单次删除上限 {max_items} 个",
+                        }
+                    )
+                continue
+            try:
+                self.delete_mailbox(email_addr, local_only=local_only)
+                deleted += 1
+            except TempMailError as exc:
+                failed += 1
+                errors_total += 1
+                if len(errors) < 50:
+                    errors.append({"email": email_addr, "error": exc.message, "code": exc.code})
+            except Exception:
+                failed += 1
+                errors_total += 1
+                if len(errors) < 50:
+                    errors.append({"email": email_addr, "error": "删除失败"})
+
+        return {
+            "deleted": deleted,
+            "failed": failed,
+            "errors": errors,
+            "errors_total": errors_total,
+            "errors_truncated": errors_total > len(errors),
+        }
 
     def generate_user_mailbox(
         self,
@@ -793,11 +857,6 @@ class TempMailService:
                         jwt=jwt,
                         provider_name=provider_key,
                     )
-                elif provider_key == "cloudflare_temp_mail":
-                    self._prepare_mailbox_for_provider_read(
-                        temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor") or existing,
-                        required=False,
-                    )
                 skipped += 1
                 continue
 
@@ -822,10 +881,6 @@ class TempMailService:
                     provider_name=provider_key,
                     allow_existing=True,
                 )
-                if provider_key == "cloudflare_temp_mail" and not jwt:
-                    descriptor = temp_emails_repo.get_temp_email_by_address(email_addr, view="descriptor")
-                    if descriptor:
-                        self._prepare_mailbox_for_provider_read(descriptor, required=False)
                 imported += 1
             except TempMailError as exc:
                 failed += 1

@@ -188,12 +188,12 @@
                 <div class="form-group">
                     <label class="form-label">邮箱列表</label>
                     <textarea class="form-textarea" id="importCfTempEmailInput" placeholder="每行一个前缀或完整邮箱&#10;demo1&#10;demo2&#10;demo3@example.com&#10;可选：demo4----JWT_TOKEN"></textarea>
-                    <div class="form-hint" id="importCfTempEmailHint">格式：每行一个前缀（推荐）或完整邮箱；可选 `前缀----JWT` / `邮箱----JWT` 以便后续取信。</div>
+                    <div class="form-hint" id="importCfTempEmailHint">格式：每行一个前缀（推荐）或完整邮箱。未带 JWT 的地址会先快速落库，首次取信时再从 CF Worker 同步凭据；若已知 JWT 可用 `前缀----JWT` 格式。</div>
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="hideImportCfTempEmailModal()">取消</button>
-                <button class="btn btn-primary" onclick="importCfTempEmails()">导入</button>
+                <button class="btn btn-secondary" id="importCfTempEmailCancelBtn" onclick="hideImportCfTempEmailModal()">取消</button>
+                <button class="btn btn-primary" id="importCfTempEmailSubmitBtn" onclick="importCfTempEmails()">导入</button>
             </div>
         </div>
     </div>
